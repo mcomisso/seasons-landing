@@ -24,6 +24,7 @@
 
   <body class="leading-normal tracking-normal text-indigo-400 m-6 bg-cover bg-fixed"
     style="background-image: url('header.png');">
+
     <div class="h-full">
       <!--Nav-->
       <div class="w-full container mx-auto">
@@ -31,10 +32,13 @@
           <a class="flex items-center text-indigo-400 no-underline hover:no-underline font-bold text-2xl lg:text-4xl"
             href="#">
             <span
-              class="bg-clip-text text-transparent bg-gradient-to-b from-green-400 via-pink-500 to-purple-500">Seasons™</span>
+              class="bg-clip-text "
+			  style="color: #6C4EFF"
+			  >Seasons™</span>
           </a>
 
           <div class="flex w-1/2 justify-end content-center">
+
             <a class="inline-block text-blue-300 no-underline hover:text-pink-500 hover:text-underline text-center h-10 p-2 md:h-auto md:p-4 transform hover:scale-125 duration-300 ease-in-out"
               href="https://twitter.com/getseasons">
               <svg class="fill-current h-6" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
@@ -55,55 +59,64 @@
       </div>
 
       <!--Main-->
-      <div class="container pt-24 md:pt-36 mx-auto flex flex-wrap flex-col md:flex-row items-center">
 
-        <!--Left Col-->
-        <div class="flex flex-col w-full xl:w-2/5 justify-center lg:items-start overflow-y-hidden">
-          <h1 class="my-4 text-3xl md:text-5xl text-white opacity-75 font-bold leading-tight text-center md:text-left">
+	  <!-- With extra space -->
+	  <!-- <div class="container pt-24 md:pt-36 mx-auto flex flex-wrap flex-col md:flex-row items-center"> -->
+
+	  <!-- Without extra space -->
+	  <div class="container pt-24 mx-auto flex flex-wrap flex-col md:flex-row items-center">
+        <div class="">
+          <h1 class="my-4 text-3xl md:text-5xl text-white  font-bold leading-tight text-center ">
             Welcome to
-            <span class="bg-clip-text text-transparent bg-gradient-to-b from-green-400 via-pink-500 to-purple-500">
+            <span class="bg-clip-text text-purple-400">
               Seasons™
             </span>
           </h1>
-          <p class="leading-normal text-base md:text-2xl mb-8 text-center md:text-left">
+          <p class="leading-normal text-purple-100 md:text-2xl mb-8 text-center md:text-left">
             Optimize your streaming experience with the only app that tailors your subscriptions to the shows and movies
             you love.
           </p>
-
-          <div class="bg-gray-100 opacity-75 w-full shadow-lg rounded-lg px-8 pt-6 pb-8 mb-4">
-            <div class="mb-4">
-              <label class="block text-blue-400 py-2 font-bold mb-2" for="emailaddress">
-                Signup to be the first using it
-              </label>
-            </div>
-
-            <script charset="utf-8" type="text/javascript" src="//js-eu1.hsforms.net/forms/embed/v2.js"></script>
-            <script>
-              hbspt.forms.create({
-                region: "eu1",
-                portalId: "143716468",
-                formId: "415cef43-1df1-4f94-9092-e75596c8a18f"
-              });
-            </script>
           </div>
         </div>
 
-        <!--Right Col-->
-        <div class="w-full xl:w-3/5 p-12 overflow-hidden">
+		<!-- With vertical padding -->
+        <!-- <div class="flex flex-col w-full justify-center p-12 overflow-y-hidden"> -->
+
+		<!-- Without vertical padding -->
+		<div class="flex flex-col w-full justify-center px-12 overflow-y-hidden">
           <img
-            class="mx-auto w-full md:w-4/5 transform transition hover:scale-105 duration-700 ease-in-out"
-            src="2phones.png" />
+            class="mx-auto w-full md:w-4/5 lg:w-3/4 xl:w-2/4"
+            src="backgroundSite.png" />
         </div>
 
         <div class="mx-auto md:pt-16">
-          <div class="flex w-full justify-center md:justify-start lg:pb-0 fade-in">
+          <div class="flex w-full justify-center  lg:pb-0 fade-in">
             <a href="https://apps.apple.com/gb/app/seasons-streaming-companion/id6502302869"><img src="App Store.svg" class="h-12 transform hover:scale-125 duration-300 ease-in-out" /></a>
-            <!-- <img src="Play Store.svg" class="h-12 transform hover:scale-125 duration-300 ease-in-out" /> -->
+
           </div>
         </div>
 
+		<div class="pt-16 mx-auto container">
+			<div class="flex flex-col  justify-center  overflow-y-hidden bg-gray-100   shadow-lg rounded-lg px-8 pt-6 pb-8 mb-4 ">
+			  <div class="mb-4">
+				<label class="block text-blue-800 py-2 font-bold mb-2" for="emailaddress" style="color: #6C4EFF">
+				  Looking for Android version? Signup to be notified when it's out!
+				</label>
+			  </div>
+
+			  <script charset="utf-8" type="text/javascript" src="//js-eu1.hsforms.net/forms/embed/v2.js"></script>
+			  <script>
+				hbspt.forms.create({
+				  region: "eu1",
+				  portalId: "143716468",
+				  formId: "415cef43-1df1-4f94-9092-e75596c8a18f"
+				});
+			  </script>
+			</div>
+		</div>
+
         <!--Footer-->
-        <div class="w-full pt-16 pb-6 text-sm text-center md:text-left fade-in">
+        <div class="w-full pt-16 pb-6 text-sm text-center fade-in">
           <a class="text-gray-500 no-underline hover:no-underline" href="#">&copy;  <a href="https://myvstudios.com">MYV Studios - 2024</a> </a>
           (Template by
           <a class="text-gray-500 no-underline hover:no-underline"
