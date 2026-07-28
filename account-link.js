@@ -13,6 +13,10 @@
         "recover-account": {
             title: "Opening Seasons",
             message: "Continue in Seasons to recover your account."
+        },
+        "family-invite": {
+            title: "Opening Seasons",
+            message: "Continue in Seasons to view your Family invitation."
         }
     };
 
