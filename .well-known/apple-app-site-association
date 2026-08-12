@@ -1,0 +1,29 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "HB5HXZR273.com.myvstudios.Seasons"
+        ],
+        "components": [
+          {
+            "/": "/family-invite",
+            "comment": "Open a Family invitation in Seasons."
+          },
+          {
+            "/": "/verify-contact-email",
+            "comment": "Complete Seasons account registration."
+          },
+          {
+            "/": "/recover-account",
+            "comment": "Recover a Seasons account."
+          },
+          {
+            "/": "/replace-contact-email",
+            "comment": "Confirm a replacement Seasons contact email."
+          }
+        ]
+      }
+    ]
+  }
+}
