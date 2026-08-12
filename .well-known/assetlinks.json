@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.myvstudios.seasons",
+      "sha256_cert_fingerprints": [
+        "8D:B2:72:4A:98:7E:27:1E:1E:EB:65:97:90:59:32:13:8D:4F:17:8F:84:15:32:AB:C8:F2:CB:04:17:29:D0:7E"
+      ]
+    }
+  }
+]
