@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1",
+  "releaseId": "zero-publication-safe-baseline",
+  "releaseSha256": "ab58537b9ff32b30eaa6f8e3f4f56bfb66e9d2eb1241b07517c89d213cc6eb36",
+  "canonicalOrigin": "https://getseasons.app",
+  "templateContractVersion": "1",
+  "pages": [],
+  "credits": {
+    "tmdbNotice": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+    "justWatchAttribution": "Watch-provider availability data is attributed to JustWatch."
+  },
+  "publicAssets": []
+}

@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "1",
+  "releaseId": "synthetic-safe-release",
+  "releaseSha256": "4ec1b07a7f145f131df1885d826165ac1b11c33cdf10f13b87be274369d62bb6",
+  "canonicalOrigin": "https://getseasons.app",
+  "templateContractVersion": "1",
+  "pages": [
+    {
+      "responseId": "safe-8-gb-v1",
+      "actionKind": "cancel",
+      "tmdbProviderId": 8,
+      "region": "GB",
+      "providerDisplayName": "Example Streaming",
+      "countryDisplayName": "United Kingdom",
+      "locale": "en",
+      "outcome": "instructions_unavailable",
+      "httpStatus": 200,
+      "canonicalUrl": "https://getseasons.app/provider-actions/cancel/8/GB/",
+      "indexability": "noindex",
+      "title": "Cancellation instructions unavailable - Seasons",
+      "metaDescription": "Seasons cannot currently verify cancellation instructions for this provider in the United Kingdom.",
+      "h1": "Cancellation instructions unavailable",
+      "summary": "We cannot currently verify cancellation instructions for Example Streaming in the United Kingdom.",
+      "warnings": [
+        "Do not use instructions for another country."
+      ],
+      "orderedSteps": [],
+      "resolvedBranches": [],
+      "supportBlocks": [
+        {
+          "heading": "What you can do",
+          "body": "Keep this Provider Action pending and report better official instructions to Seasons."
+        }
+      ],
+      "providerAction": null,
+      "supportAction": null,
+      "reportAction": {
+        "label": "Report better instructions",
+        "href": "https://getseasons.app/provider-actions/report/"
+      },
+      "genericSeasonsReturnAction": {
+        "label": "Open Seasons",
+        "href": "https://getseasons.app/"
+      },
+      "contextualSeasonsReturnPrefix": "https://getseasons.app/provider-actions/return/#",
+      "contextualSeasonsReturnLabel": "Return to cancellation confirmation",
+      "screenshot": null,
+      "creditsHref": "https://getseasons.app/provider-actions/credits/"
+    }
+  ],
+  "credits": {
+    "tmdbNotice": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+    "justWatchAttribution": "Watch-provider availability data is attributed to JustWatch."
+  },
+  "publicAssets": []
+}

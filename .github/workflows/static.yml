@@ -31,13 +31,34 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify Provider Actions renderer
+        run: python3 -m unittest discover -s tests -v
+      - name: Render pinned Provider Actions release
+        run: >-
+          python3 -m provider_actions render
+          provider-actions-safe-baseline-release.json
+          provider-actions-public-artifact
+      - name: Verify exact Provider Actions artifact
+        run: >-
+          python3 -m provider_actions scan
+          provider-actions-public-artifact
+          provider-actions-safe-baseline-release.json
+      - name: Stage allowlisted public site
+        run: >-
+          python3 scripts/stage_pages.py
+          --output _site
+          --provider-actions-artifact provider-actions-public-artifact
+          --sealed-release provider-actions-safe-baseline-release.json
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository
-          path: '.'
+          path: '_site'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
