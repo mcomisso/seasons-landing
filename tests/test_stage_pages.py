@@ -74,6 +74,9 @@ class StagePagesTests(unittest.TestCase):
         for relative_path in PUBLIC_FILES:
             self.assertEqual((output / relative_path).read_bytes(), (self.repository / relative_path).read_bytes())
 
+    def test_account_deletion_request_page_is_public(self) -> None:
+        self.assertIn("delete-account", PUBLIC_DIRECTORIES)
+
     def test_unsafe_output_is_rejected_without_touching_it(self) -> None:
         unsafe_output = self.root / "not-the-site"
         unsafe_output.mkdir()

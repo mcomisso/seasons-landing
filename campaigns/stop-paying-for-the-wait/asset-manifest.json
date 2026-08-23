@@ -1,0 +1,201 @@
+{
+  "campaign": "Stop Paying for the Wait",
+  "generatedBy": "scripts/render-assets.js",
+  "deterministicInputs": {
+    "logo": "../../seasonslogo.png",
+    "qualification": "Example assumes a UK £9.99 monthly plan, subscription starting 3 April 2026, monthly renewal on the 3rd, watching after the 5 June finale, and no other Apple TV viewing during the release window. Prices and dates can change.",
+    "sources": "Sources: Apple release schedule and Apple TV UK price. Checked 23 August 2026.",
+    "checkedDate": "2026-08-23"
+  },
+  "assets": [
+    {
+      "id": "ig-carousel-01-hook",
+      "file": "exports/instagram/carousel-01-hook.png",
+      "width": 1080,
+      "height": 1350,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Carousel slide 1",
+      "variant": "Hook"
+    },
+    {
+      "id": "ig-carousel-02-episodes",
+      "file": "exports/instagram/carousel-02-episodes.png",
+      "width": 1080,
+      "height": 1350,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Carousel slide 2",
+      "variant": "Release window"
+    },
+    {
+      "id": "ig-carousel-03-premiere",
+      "file": "exports/instagram/carousel-03-premiere-plan.png",
+      "width": 1080,
+      "height": 1350,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Carousel slide 3",
+      "variant": "Premiere strategy"
+    },
+    {
+      "id": "ig-carousel-04-wait",
+      "file": "exports/instagram/carousel-04-wait-plan.png",
+      "width": 1080,
+      "height": 1350,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Carousel slide 4",
+      "variant": "Wait strategy"
+    },
+    {
+      "id": "ig-carousel-05-result",
+      "file": "exports/instagram/carousel-05-result-cta.png",
+      "width": 1080,
+      "height": 1350,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Carousel slide 5",
+      "variant": "Result and CTA"
+    },
+    {
+      "id": "ig-story-01-hook",
+      "file": "exports/instagram/story-01-hook.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Story frame 1",
+      "variant": "Hook"
+    },
+    {
+      "id": "ig-story-02-proof",
+      "file": "exports/instagram/story-02-proof.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Story frame 2",
+      "variant": "Proof"
+    },
+    {
+      "id": "ig-story-03-result",
+      "file": "exports/instagram/story-03-result-cta.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Story frame 3",
+      "variant": "Result and CTA"
+    },
+    {
+      "id": "ig-reel-cover",
+      "file": "exports/instagram/reel-cover.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "Instagram",
+      "use": "Reel cover",
+      "variant": "Mechanism"
+    },
+    {
+      "id": "tt-frame-01-hook",
+      "file": "exports/tiktok/frame-01-hook.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "TikTok",
+      "use": "Video frame 0:00-0:04",
+      "variant": "Hook"
+    },
+    {
+      "id": "tt-frame-02-release",
+      "file": "exports/tiktok/frame-02-release.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "TikTok",
+      "use": "Video frame 0:04-0:08",
+      "variant": "Release window"
+    },
+    {
+      "id": "tt-frame-03-premiere",
+      "file": "exports/tiktok/frame-03-premiere.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "TikTok",
+      "use": "Video frame 0:08-0:12",
+      "variant": "Premiere strategy"
+    },
+    {
+      "id": "tt-frame-04-wait",
+      "file": "exports/tiktok/frame-04-wait.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "TikTok",
+      "use": "Video frame 0:12-0:16",
+      "variant": "Wait strategy"
+    },
+    {
+      "id": "tt-frame-05-result",
+      "file": "exports/tiktok/frame-05-result.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "TikTok",
+      "use": "Video frame 0:16-0:20",
+      "variant": "Result"
+    },
+    {
+      "id": "tt-frame-06-qualification",
+      "file": "exports/tiktok/frame-06-qualification.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "TikTok",
+      "use": "Video frame 0:20-0:24",
+      "variant": "Qualification and CTA"
+    },
+    {
+      "id": "tt-cover",
+      "file": "exports/tiktok/cover.png",
+      "width": 1080,
+      "height": 1920,
+      "format": "PNG",
+      "platform": "TikTok",
+      "use": "Video cover",
+      "variant": "Hook"
+    },
+    {
+      "id": "reddit-link-card",
+      "file": "exports/reddit/link-card-1200x628.png",
+      "width": 1200,
+      "height": 628,
+      "format": "PNG",
+      "platform": "Reddit",
+      "use": "Link-card preview",
+      "variant": "Mechanism + proof"
+    },
+    {
+      "id": "reddit-proof-card",
+      "file": "exports/reddit/native-proof-card-1080x1080.png",
+      "width": 1080,
+      "height": 1080,
+      "format": "PNG",
+      "platform": "Reddit",
+      "use": "Native image post",
+      "variant": "Worked proof"
+    }
+  ],
+  "video": {
+    "file": "exports/tiktok/stop-paying-for-the-wait-24s.mp4",
+    "width": 1080,
+    "height": 1920,
+    "durationSeconds": 24,
+    "frameRate": 30,
+    "audio": "none",
+    "captions": "burned-in on-screen copy"
+  }
+}

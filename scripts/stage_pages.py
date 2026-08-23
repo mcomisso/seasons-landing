@@ -41,6 +41,7 @@ PUBLIC_FILES = (
 )
 PUBLIC_DIRECTORIES = (
     ".well-known",
+    "delete-account",
     "family-invite",
     "recover-account",
     "replace-contact-email",
