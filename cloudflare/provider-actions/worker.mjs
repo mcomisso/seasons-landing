@@ -1,5 +1,7 @@
 const PUBLIC_ORIGIN = "https://getseasons.app";
 const BACKEND_ORIGIN = "https://api.getseasons.app";
+const STAGING_HOST =
+  /^seasons-provider-actions-router-staging\.[a-z0-9-]+\.workers\.dev$/;
 const SAFE_ORIGIN_STATUSES = new Set([200, 302, 400, 404]);
 
 const SAFE_HEADERS = {
@@ -72,9 +74,15 @@ function configuredBackendOrigin(env) {
   }
 }
 
-function isProviderActionsRequest(url) {
+function isProviderActionsRequest(url, mode) {
+  const acceptedOrigin =
+    url.origin === PUBLIC_ORIGIN ||
+    (mode === "staging-proxy" &&
+      url.protocol === "https:" &&
+      url.port === "" &&
+      STAGING_HOST.test(url.hostname));
   return (
-    url.origin === PUBLIC_ORIGIN &&
+    acceptedOrigin &&
     (url.pathname === "/provider-actions" ||
       url.pathname.startsWith("/provider-actions/"))
   );
@@ -115,7 +123,8 @@ function publicResponse(response, pathname) {
 export default {
   async fetch(request, env, executionContext) {
     const incoming = new URL(request.url);
-    if (!isProviderActionsRequest(incoming)) {
+    const mode = env?.SEASONS_PROVIDER_ACTIONS_MODE;
+    if (!isProviderActionsRequest(incoming, mode)) {
       return safeResponse(404, "Not found", "This page does not exist.");
     }
     if (request.method !== "GET") {
@@ -126,14 +135,14 @@ export default {
         { Allow: "GET" }
       );
     }
-    if (env?.SEASONS_PROVIDER_ACTIONS_MODE === "safe-baseline") {
+    if (mode === "safe-baseline") {
       return safeResponse(
         503,
         "Provider Actions are temporarily unavailable",
         "Try again later or return to Seasons."
       );
     }
-    if (env?.SEASONS_PROVIDER_ACTIONS_MODE !== "proxy") {
+    if (mode !== "proxy" && mode !== "staging-proxy") {
       return safeResponse(
         503,
         "Provider Actions are temporarily unavailable",
@@ -150,7 +159,7 @@ export default {
       );
     }
 
-    const rawPathAndQuery = request.url.slice(PUBLIC_ORIGIN.length);
+    const rawPathAndQuery = request.url.slice(incoming.origin.length);
     const headers = new Headers();
     const accept = request.headers.get("Accept");
     if (accept !== null) {

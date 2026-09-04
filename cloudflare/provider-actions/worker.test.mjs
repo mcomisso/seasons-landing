@@ -8,6 +8,10 @@ const ENV = {
   SEASONS_PROVIDER_ACTIONS_MODE: "proxy",
   SEASONS_PROVIDER_ACTIONS_ORIGIN: "https://api.getseasons.app",
 };
+const STAGING_ENV = {
+  ...ENV,
+  SEASONS_PROVIDER_ACTIONS_MODE: "staging-proxy",
+};
 
 const ORIGIN_HEADERS = {
   "Cache-Control": "no-store",
@@ -89,6 +93,46 @@ test("preserves encoded raw path and query bytes for backend validation", async 
   );
 });
 
+test("route-free staging Worker proxies its exact workers.dev URL", async () => {
+  let target;
+  const response = await worker.fetch(
+    new Request(
+      "https://seasons-provider-actions-router-staging.myvstudios.workers.dev/provider-actions/start%2F8%2FGB%2F?x=%2f&x=%2F"
+    ),
+    STAGING_ENV,
+    {
+      fetch: async (request) => {
+        target = request.url;
+        return new Response("safe", { status: 400, headers: ORIGIN_HEADERS });
+      },
+    }
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal(
+    target,
+    "https://api.getseasons.app/provider-actions/start%2F8%2FGB%2F?x=%2f&x=%2F"
+  );
+});
+
+for (const url of [
+  "https://other-worker.myvstudios.workers.dev/provider-actions/start/8/GB/",
+  "https://seasons-provider-actions-router-staging.myvstudios.workers.dev/provider-actions/start/8/GB/",
+]) {
+  test(`production mode refuses workers.dev request ${url}`, async () => {
+    let fetchCalled = false;
+    const response = await worker.fetch(new Request(url), ENV, {
+      fetch: async () => {
+        fetchCalled = true;
+        return new Response("unexpected");
+      },
+    });
+
+    assert.equal(fetchCalled, false);
+    assert.equal(response.status, 404);
+  });
+}
+
 for (const url of [
   "https://getseasons.app/",
   "https://getseasons.app/provider-action/start/8/GB/",
@@ -161,28 +205,42 @@ test("rejects mutating methods without contacting the backend", async () => {
   assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
-test("safe-baseline mode keeps canonical links usable without origin traffic", async () => {
-  let fetchCalled = false;
-  const response = await worker.fetch(
-    new Request("https://getseasons.app/provider-actions/cancel/8/GB/"),
-    { ...ENV, SEASONS_PROVIDER_ACTIONS_MODE: "safe-baseline" },
-    {
-      fetch: async () => {
-        fetchCalled = true;
-        return new Response("unexpected");
-      },
-    }
-  );
+for (const path of [
+  "/provider-actions",
+  "/provider-actions/",
+  "/provider-actions/cancel/8/GB/",
+  "/provider-actions/start/8/GB/",
+  "/provider-actions/cancel/999999/ZZ/",
+  "/provider-actions/cancel/8/gb/",
+  "/provider-actions/cancel/08/GB/",
+  "/provider-actions/cancel/8/GB/?context=invalid",
+  "/provider-actions/sitemap.xml",
+]) {
+  test(`safe-baseline mode contains ${path} without origin traffic`, async () => {
+    let fetchCalled = false;
+    const response = await worker.fetch(
+      new Request(`https://getseasons.app${path}`),
+      { ...ENV, SEASONS_PROVIDER_ACTIONS_MODE: "safe-baseline" },
+      {
+        fetch: async () => {
+          fetchCalled = true;
+          return new Response("unexpected");
+        },
+      }
+    );
 
-  assert.equal(fetchCalled, false);
-  assert.equal(response.status, 503);
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  const body = await response.text();
-  assert.match(body, /<main>/);
-  assert.match(body, /<h1>Provider Actions are temporarily unavailable<\/h1>/);
-  assert.match(body, /No subscription state has changed\./);
-  assert.match(body, /href="https:\/\/getseasons\.app\/"/);
-});
+    assert.equal(fetchCalled, false);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-robots-tag"), "noindex");
+    assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+    const body = await response.text();
+    assert.match(body, /<main>/);
+    assert.match(body, /<h1>Provider Actions are temporarily unavailable<\/h1>/);
+    assert.match(body, /No subscription state has changed\./);
+    assert.match(body, /href="https:\/\/getseasons\.app\/"/);
+  });
+}
 
 test("origin failure returns the accessible safe response", async () => {
   const response = await worker.fetch(
@@ -334,4 +392,21 @@ test("Cloudflare configs capture only the Provider Actions route family", async 
       new RegExp(`SEASONS_PROVIDER_ACTIONS_MODE = "${expectedMode}"`)
     );
   }
+});
+
+test("Cloudflare staging config cannot capture production routes", async () => {
+  const config = await readFile(
+    new URL("./wrangler.staging.toml", import.meta.url),
+    "utf8"
+  );
+
+  assert.match(config, /name = "seasons-provider-actions-router-staging"/);
+  assert.match(config, /workers_dev = true/);
+  assert.doesNotMatch(config, /^routes\s*=/m);
+  assert.doesNotMatch(config, /pattern = "getseasons\.app\//);
+  assert.match(
+    config,
+    /SEASONS_PROVIDER_ACTIONS_ORIGIN = "https:\/\/api\.getseasons\.app"/
+  );
+  assert.match(config, /SEASONS_PROVIDER_ACTIONS_MODE = "staging-proxy"/);
 });

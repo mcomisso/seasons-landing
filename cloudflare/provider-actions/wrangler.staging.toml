@@ -1,0 +1,10 @@
+name = "seasons-provider-actions-router-staging"
+main = "worker.mjs"
+compatibility_date = "2026-09-04"
+workers_dev = true
+
+# This candidate has no getseasons.app route. Probe its workers.dev URL before
+# publishing the separately named production Worker with wrangler.toml.
+[vars]
+SEASONS_PROVIDER_ACTIONS_MODE = "staging-proxy"
+SEASONS_PROVIDER_ACTIONS_ORIGIN = "https://api.getseasons.app"

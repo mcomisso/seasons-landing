@@ -48,9 +48,11 @@ previous Worker and backend release cannot both be restored.
 
 Before activation, record the current Worker version, exact route bindings,
 backend release ID, Fly image digest, Pages deployment SHA, and compatible
-predecessor. Upload a candidate without routes first, probe its response matrix,
-then bind the two exact routes only if the recorded production state is still
-current. Never bind `getseasons.app/*`.
+predecessor. Deploy `wrangler.staging.toml` first. It uses the separately named
+`seasons-provider-actions-router-staging` Worker on workers.dev and has no
+`getseasons.app` routes. Probe its response matrix, then deploy `wrangler.toml`
+only if the recorded production state is still current. Never bind
+`getseasons.app/*`.
 
 Rollback must restore the recorded compatible Worker and backend release as a
 pair. If that pair is unavailable, deploy `wrangler.safe-baseline.toml`. After
