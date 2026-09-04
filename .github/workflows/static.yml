@@ -37,6 +37,8 @@ jobs:
           python-version: '3.13'
       - name: Verify Provider Actions renderer
         run: python3 -m unittest discover -s tests -v
+      - name: Verify Provider Actions canonical route
+        run: node --test cloudflare/provider-actions/worker.test.mjs
       - name: Render pinned Provider Actions release
         run: >-
           python3 -m provider_actions render

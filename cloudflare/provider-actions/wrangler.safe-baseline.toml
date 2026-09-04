@@ -1,0 +1,14 @@
+name = "seasons-provider-actions-router"
+main = "worker.mjs"
+compatibility_date = "2026-09-04"
+
+# This keeps the canonical URL family fail-closed during an emergency rollback.
+# It owns the same narrow routes and never contacts the backend.
+routes = [
+  { pattern = "getseasons.app/provider-actions", zone_name = "getseasons.app" },
+  { pattern = "getseasons.app/provider-actions/*", zone_name = "getseasons.app" },
+]
+
+[vars]
+SEASONS_PROVIDER_ACTIONS_MODE = "safe-baseline"
+SEASONS_PROVIDER_ACTIONS_ORIGIN = "https://api.getseasons.app"

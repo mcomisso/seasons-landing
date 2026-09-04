@@ -1,0 +1,14 @@
+name = "seasons-provider-actions-router"
+main = "worker.mjs"
+compatibility_date = "2026-09-04"
+
+# These are the only production routes this Worker may own. Everything else
+# on getseasons.app continues to resolve from GitHub Pages.
+routes = [
+  { pattern = "getseasons.app/provider-actions", zone_name = "getseasons.app" },
+  { pattern = "getseasons.app/provider-actions/*", zone_name = "getseasons.app" },
+]
+
+[vars]
+SEASONS_PROVIDER_ACTIONS_MODE = "proxy"
+SEASONS_PROVIDER_ACTIONS_ORIGIN = "https://api.getseasons.app"
