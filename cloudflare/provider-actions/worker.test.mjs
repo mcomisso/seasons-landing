@@ -23,6 +23,15 @@ const ORIGIN_HEADERS = {
   "X-Frame-Options": "DENY",
   "X-Robots-Tag": "noindex",
 };
+const RELEASE_HEADERS = {
+  ...ORIGIN_HEADERS,
+  "X-Seasons-Provider-Actions-Release": "release-42",
+};
+const PAIR_HEADERS = {
+  ...RELEASE_HEADERS,
+  "X-Seasons-Provider-Actions-Region": "GB",
+  "X-Seasons-Provider-Actions-Provider": "8",
+};
 
 test("proxies the exact Provider Actions URL without forwarding private headers", async () => {
   const observed = [];
@@ -44,9 +53,8 @@ test("proxies the exact Provider Actions URL without forwarding private headers"
         return new Response(null, {
           status: 302,
           headers: {
-            ...ORIGIN_HEADERS,
+            ...PAIR_HEADERS,
             Location: "https://www.netflix.com/",
-            "X-Seasons-Provider-Actions-Release": "release-42",
           },
         });
       },
@@ -82,7 +90,7 @@ test("preserves encoded raw path and query bytes for backend validation", async 
     {
       fetch: async (request) => {
         target = request.url;
-        return new Response("safe", { status: 400, headers: ORIGIN_HEADERS });
+        return new Response("safe", { status: 400, headers: RELEASE_HEADERS });
       },
     }
   );
@@ -103,7 +111,7 @@ test("route-free staging Worker proxies its exact workers.dev URL", async () => 
     {
       fetch: async (request) => {
         target = request.url;
-        return new Response("safe", { status: 400, headers: ORIGIN_HEADERS });
+        return new Response("safe", { status: 400, headers: RELEASE_HEADERS });
       },
     }
   );
@@ -261,10 +269,10 @@ test("origin failure returns the accessible safe response", async () => {
 
 for (const unsafeResponse of [
   new Response("stale", { status: 200 }),
-  new Response("server error", { status: 500, headers: ORIGIN_HEADERS }),
+  new Response("server error", { status: 500, headers: PAIR_HEADERS }),
   new Response("cached", {
     status: 200,
-    headers: { ...ORIGIN_HEADERS, "Cache-Control": "public, max-age=3600" },
+    headers: { ...PAIR_HEADERS, "Cache-Control": "public, max-age=3600" },
   }),
 ]) {
   test(`fails closed for unsafe backend response ${unsafeResponse.status}`, async () => {
@@ -280,6 +288,57 @@ for (const unsafeResponse of [
   });
 }
 
+test("fails closed when the backend omits release identity", async () => {
+  const response = await worker.fetch(
+    new Request("https://getseasons.app/provider-actions/start%2F8%2FGB%2F"),
+    ENV,
+    {
+      fetch: async () =>
+        new Response("invalid path", { status: 400, headers: ORIGIN_HEADERS }),
+    }
+  );
+
+  assert.equal(response.status, 502);
+  assert.match(await response.text(), /temporarily unavailable/i);
+});
+
+test("fails closed when a backend redirect omits Location", async () => {
+  const response = await worker.fetch(
+    new Request("https://getseasons.app/provider-actions/start/8/GB/"),
+    ENV,
+    {
+      fetch: async () =>
+        new Response(null, { status: 302, headers: PAIR_HEADERS }),
+    }
+  );
+
+  assert.equal(response.status, 502);
+});
+
+for (const [name, headers] of [
+  ["missing pair identity", RELEASE_HEADERS],
+  [
+    "mismatched region",
+    { ...PAIR_HEADERS, "X-Seasons-Provider-Actions-Region": "US" },
+  ],
+  [
+    "mismatched provider",
+    { ...PAIR_HEADERS, "X-Seasons-Provider-Actions-Provider": "9" },
+  ],
+]) {
+  test(`fails closed for ${name} on a canonical action path`, async () => {
+    const response = await worker.fetch(
+      new Request("https://getseasons.app/provider-actions/cancel/8/GB/"),
+      ENV,
+      {
+        fetch: async () => new Response("safe", { status: 200, headers }),
+      }
+    );
+
+    assert.equal(response.status, 502);
+  });
+}
+
 test("removes origin cookies while preserving verified response bytes", async () => {
   const response = await worker.fetch(
     new Request("https://getseasons.app/provider-actions/cancel/8/GB/"),
@@ -288,13 +347,24 @@ test("removes origin cookies while preserving verified response bytes", async ()
       fetch: async () =>
         new Response("<main><h1>Cancel Netflix</h1></main>", {
           status: 200,
-          headers: { ...ORIGIN_HEADERS, "Set-Cookie": "private=value" },
+          headers: {
+            ...PAIR_HEADERS,
+            "Set-Cookie": "private=value",
+            "X-Internal-Debug": "must-not-cross-public-boundary",
+          },
         }),
     }
   );
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("set-cookie"), null);
+  assert.equal(response.headers.get("x-internal-debug"), null);
+  assert.equal(
+    response.headers.get("x-seasons-provider-actions-release"),
+    "release-42"
+  );
+  assert.equal(response.headers.get("x-seasons-provider-actions-region"), "GB");
+  assert.equal(response.headers.get("x-seasons-provider-actions-provider"), "8");
   assert.equal(
     await response.text(),
     "<main><h1>Cancel Netflix</h1></main>"
@@ -310,7 +380,7 @@ test("replaces permissive origin security headers with the public safe policy", 
         new Response("safe body", {
           status: 200,
           headers: {
-            ...ORIGIN_HEADERS,
+            ...PAIR_HEADERS,
             "Content-Security-Policy": "default-src *; frame-ancestors *",
             "Referrer-Policy": "unsafe-url",
             "X-Content-Type-Options": "off",
@@ -338,7 +408,7 @@ test("preserves the canonical XML media type for the Provider Actions sitemap", 
         new Response("<urlset/>", {
           status: 200,
           headers: {
-            ...ORIGIN_HEADERS,
+            ...RELEASE_HEADERS,
             "Content-Type": "application/xml; charset=utf-8",
           },
         }),
@@ -361,7 +431,7 @@ test("preserves the backend HTML 400 for a queried sitemap", async () => {
       fetch: async () =>
         new Response("<main>Invalid sitemap request</main>", {
           status: 400,
-          headers: ORIGIN_HEADERS,
+          headers: RELEASE_HEADERS,
         }),
     }
   );

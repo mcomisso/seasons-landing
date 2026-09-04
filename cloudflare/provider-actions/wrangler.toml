@@ -1,6 +1,7 @@
 name = "seasons-provider-actions-router"
 main = "worker.mjs"
 compatibility_date = "2026-09-04"
+account_id = "48039421df9478545ee479d6272049da"
 
 # These are the only production routes this Worker may own. Everything else
 # on getseasons.app continues to resolve from GitHub Pages.

@@ -3,6 +3,11 @@ const BACKEND_ORIGIN = "https://api.getseasons.app";
 const STAGING_HOST =
   /^seasons-provider-actions-router-staging\.[a-z0-9-]+\.workers\.dev$/;
 const SAFE_ORIGIN_STATUSES = new Set([200, 302, 400, 404]);
+const RELEASE_HEADER = "X-Seasons-Provider-Actions-Release";
+const REGION_HEADER = "X-Seasons-Provider-Actions-Region";
+const PROVIDER_HEADER = "X-Seasons-Provider-Actions-Provider";
+const CANONICAL_ACTION_PATH =
+  /^\/provider-actions\/(?:cancel|start)\/([1-9][0-9]*)\/([A-Z]{2})\/$/;
 
 const SAFE_HEADERS = {
   "Cache-Control": "no-store",
@@ -95,24 +100,40 @@ function expectedContentType(pathname, status) {
 }
 
 function hasSafeOriginResponse(response, pathname) {
+  if (
+    !SAFE_ORIGIN_STATUSES.has(response.status) ||
+    response.headers.get("cache-control") !== "no-store" ||
+    response.headers.get("content-type") !==
+      expectedContentType(pathname, response.status) ||
+    REQUIRED_ORIGIN_HEADERS.some((name) => !response.headers.has(name)) ||
+    !response.headers.get(RELEASE_HEADER) ||
+    (response.status === 302 && !response.headers.get("Location"))
+  ) {
+    return false;
+  }
+
+  const pair = pathname.match(CANONICAL_ACTION_PATH);
+  if (pair === null) {
+    return true;
+  }
   return (
-    SAFE_ORIGIN_STATUSES.has(response.status) &&
-    response.headers.get("cache-control") === "no-store" &&
-    response.headers.get("content-type") ===
-      expectedContentType(pathname, response.status) &&
-    REQUIRED_ORIGIN_HEADERS.every((name) => response.headers.has(name))
+    response.headers.get(PROVIDER_HEADER) === pair[1] &&
+    response.headers.get(REGION_HEADER) === pair[2]
   );
 }
 
 function publicResponse(response, pathname) {
-  const headers = new Headers(response.headers);
-  for (const [name, value] of Object.entries(SAFE_HEADERS)) {
-    if (name !== "Content-Type") {
+  const headers = new Headers(SAFE_HEADERS);
+  for (const name of [RELEASE_HEADER, REGION_HEADER, PROVIDER_HEADER]) {
+    const value = response.headers.get(name);
+    if (value !== null) {
       headers.set(name, value);
     }
   }
   headers.set("Content-Type", expectedContentType(pathname, response.status));
-  headers.delete("Set-Cookie");
+  if (response.status === 302) {
+    headers.set("Location", response.headers.get("Location"));
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

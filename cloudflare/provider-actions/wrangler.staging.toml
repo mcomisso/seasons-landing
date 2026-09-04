@@ -1,6 +1,7 @@
 name = "seasons-provider-actions-router-staging"
 main = "worker.mjs"
 compatibility_date = "2026-09-04"
+account_id = "48039421df9478545ee479d6272049da"
 workers_dev = true
 
 # This candidate has no getseasons.app route. Probe its workers.dev URL before
