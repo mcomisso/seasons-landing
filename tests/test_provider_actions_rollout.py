@@ -16,7 +16,11 @@ TOOL = ROOT / "scripts/provider_actions_rollout.py"
 PRODUCTION_CONFIG = ROOT / "cloudflare/provider-actions/wrangler.toml"
 ACCOUNT_ID = "48039421df9478545ee479d6272049da"
 PRODUCTION_WORKER = "seasons-provider-actions-router"
-REPRESENTATIVE_PATHS = ("/", "/privacy.html", "/terms.html")
+REPRESENTATIVE_PATHS = (
+    "/family-invite/",
+    "/account-link.css",
+    "/seasonslogo.png",
+)
 
 SPEC = importlib.util.spec_from_file_location("provider_actions_rollout", TOOL)
 assert SPEC is not None and SPEC.loader is not None

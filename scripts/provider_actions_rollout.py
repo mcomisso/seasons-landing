@@ -64,9 +64,9 @@ PRODUCTION_ROUTES = {
     ("getseasons.app/provider-actions/*", PRODUCTION_WORKER),
 }
 REPRESENTATIVE_PAGES = {
-    "https://getseasons.app/",
-    "https://getseasons.app/privacy.html",
-    "https://getseasons.app/terms.html",
+    "https://getseasons.app/family-invite/",
+    "https://getseasons.app/account-link.css",
+    "https://getseasons.app/seasonslogo.png",
 }
 CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
 CLOUDFLARE_NOT_FOUND = object()
