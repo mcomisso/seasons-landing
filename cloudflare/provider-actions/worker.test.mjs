@@ -271,6 +271,30 @@ test("replaces permissive origin security headers with the public safe policy", 
   assert.equal(response.headers.get("x-frame-options"), "DENY");
 });
 
+test("preserves the canonical XML media type for the Provider Actions sitemap", async () => {
+  const response = await worker.fetch(
+    new Request("https://getseasons.app/provider-actions/sitemap.xml"),
+    ENV,
+    {
+      fetch: async () =>
+        new Response("<urlset/>", {
+          status: 200,
+          headers: {
+            ...ORIGIN_HEADERS,
+            "Content-Type": "application/xml; charset=utf-8",
+          },
+        }),
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get("content-type"),
+    "application/xml; charset=utf-8"
+  );
+  assert.equal(await response.text(), "<urlset/>");
+});
+
 test("Cloudflare configs capture only the Provider Actions route family", async () => {
   for (const [name, expectedMode] of [
     ["wrangler.toml", "proxy"],

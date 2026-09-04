@@ -80,19 +80,29 @@ function isProviderActionsRequest(url) {
   );
 }
 
-function hasSafeOriginResponse(response) {
+function expectedContentType(pathname) {
+  return pathname === "/provider-actions/sitemap.xml"
+    ? "application/xml; charset=utf-8"
+    : "text/html; charset=utf-8";
+}
+
+function hasSafeOriginResponse(response, pathname) {
   return (
     SAFE_ORIGIN_STATUSES.has(response.status) &&
     response.headers.get("cache-control") === "no-store" &&
+    response.headers.get("content-type") === expectedContentType(pathname) &&
     REQUIRED_ORIGIN_HEADERS.every((name) => response.headers.has(name))
   );
 }
 
-function publicResponse(response) {
+function publicResponse(response, pathname) {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(SAFE_HEADERS)) {
-    headers.set(name, value);
+    if (name !== "Content-Type") {
+      headers.set(name, value);
+    }
   }
+  headers.set("Content-Type", expectedContentType(pathname));
   headers.delete("Set-Cookie");
   return new Response(response.body, {
     status: response.status,
@@ -154,14 +164,14 @@ export default {
 
     try {
       const response = await fetchOrigin(backendRequest);
-      if (!hasSafeOriginResponse(response)) {
+      if (!hasSafeOriginResponse(response, incoming.pathname)) {
         return safeResponse(
           502,
           "Provider Actions are temporarily unavailable",
           "The service returned an unsafe response."
         );
       }
-      return publicResponse(response);
+      return publicResponse(response, incoming.pathname);
     } catch {
       return safeResponse(
         503,
