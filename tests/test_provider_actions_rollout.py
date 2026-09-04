@@ -184,6 +184,34 @@ def minimal_readback_case(temporary: Path):
 
 
 class ProviderActionsRolloutTests(unittest.TestCase):
+    def test_post_deploy_worker_must_be_proxy_mode(self):
+        sources = [
+            {"name": "account", "type": "cloudflare-account"},
+            {"name": "zone", "type": "cloudflare-zone"},
+            {"name": "routes", "type": "cloudflare-routes"},
+            {"name": "worker", "type": "cloudflare-worker"},
+        ]
+        values = {
+            "account": {"id": ACCOUNT_ID},
+            "zone": {"name": "getseasons.app", "accountId": ACCOUNT_ID},
+            "routes": {
+                "routes": [
+                    {"pattern": pattern, "script": worker}
+                    for pattern, worker in ROLLOUT.PRODUCTION_ROUTES
+                ]
+            },
+            "worker": {
+                "name": PRODUCTION_WORKER,
+                "versionId": "deployed-version",
+                "mode": "safe-baseline",
+            },
+        }
+
+        with self.assertRaisesRegex(ROLLOUT.RolloutError, "Worker identity"):
+            ROLLOUT.validate_activation_sources(
+                sources, values, after_activation=True
+            )
+
     def test_cloudflare_worker_not_found_normalizes_as_absent(self):
         missing = urllib.error.HTTPError(
             "https://api.cloudflare.invalid/worker", 404, "Not Found", None, None
@@ -827,7 +855,7 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             self.assertEqual(evidence["phase"], "rollback")
             self.assertRegex(evidence["controlPinSha256"], r"^[0-9a-f]{64}$")
 
-    def test_safe_baseline_rollback_verifies_503_family_and_unrelated_pages(self):
+    def test_safe_baseline_rollback_rejects_fixture_before_mutation(self):
         with TemporaryDirectory() as directory:
             temporary = Path(directory)
             plan, fixture, _ = minimal_readback_case(temporary)
@@ -953,16 +981,13 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                 str(output),
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            evidence = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(evidence["rollbackProfile"], "safe-baseline")
-            self.assertEqual(evidence["operation"], "rollback-executed")
-            self.assertEqual(evidence["controlProof"]["workerMode"], "safe-baseline")
-            self.assertEqual(evidence["safeBaselineResponses"], len(action_paths))
-            self.assertTrue(
-                all(item["releaseId"] is None for item in evidence["observations"])
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("live canonical readback", result.stderr)
+            self.assertEqual(
+                json.loads(worker.read_text(encoding="utf-8"))["versionId"],
+                "candidate",
             )
-            self.assertEqual(len(evidence["unrelatedPages"]), 3)
+            self.assertFalse(output.exists())
 
     def test_normal_rollback_restores_pinned_worker_and_runs_readback(self):
         with TemporaryDirectory() as directory:

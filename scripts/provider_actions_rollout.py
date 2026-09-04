@@ -395,6 +395,7 @@ def validate_activation_sources(
     values: dict[str, object],
     *,
     after_activation: bool,
+    expected_worker_mode: str | None = None,
 ) -> None:
     by_type: dict[str, tuple[str, object]] = {}
     for source in sources:
@@ -434,6 +435,8 @@ def validate_activation_sources(
     ):
         raise RolloutError("Cloudflare routes did not match the exact production pair")
     worker = by_type["cloudflare-worker"][1]
+    if after_activation and expected_worker_mode is None:
+        expected_worker_mode = "proxy"
     if (
         not isinstance(worker, dict)
         or worker.get("name") != PRODUCTION_WORKER
@@ -442,6 +445,7 @@ def validate_activation_sources(
             and (
                 not isinstance(worker.get("versionId"), str)
                 or not worker["versionId"]
+                or worker.get("mode") != expected_worker_mode
             )
         )
         or (
@@ -867,6 +871,8 @@ def rollback(
         raise RolloutError("normal rollback needs a target pin")
     if profile == "safe-baseline" and target_pin_path is not None:
         raise RolloutError("safe-baseline rollback does not accept a target pin")
+    if responses_path is not None:
+        raise RolloutError("executable rollback requires live canonical readback")
     worker_source = next(
         str(source["name"])
         for source in sources
@@ -875,8 +881,6 @@ def rollback(
     before_by_name = {item["name"]: item["sha256"] for item in before}
     if profile == "predecessor":
         assert target_pin_path is not None and target_version is not None
-        if responses_path is not None:
-            raise RolloutError("normal rollback requires live canonical readback")
         current_target, current_types = validate_release_authorization(
             plan, sources, before_values, phase="final"
         )
@@ -997,7 +1001,12 @@ def rollback(
         after, after_values = control_snapshot(
             sources, control_plan_path.resolve().parent
         )
-        validate_activation_sources(sources, after_values, after_activation=True)
+        validate_activation_sources(
+            sources,
+            after_values,
+            after_activation=True,
+            expected_worker_mode="safe-baseline",
+        )
         after_by_name = {item["name"]: item["sha256"] for item in after}
         if any(
             digest != after_by_name[name]
