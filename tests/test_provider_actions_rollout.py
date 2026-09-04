@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -8,6 +9,7 @@ import threading
 import unittest
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -227,6 +229,83 @@ class ProviderActionsRolloutTests(unittest.TestCase):
         self.assertEqual(result["status"], 200)
         self.assertEqual(result["headers"]["X-Test-Response"], "preserved")
         self.assertEqual(base64.b64decode(result["bodyBase64"]), b"readback body")
+
+    def test_live_response_retries_only_bounded_transport_failures(self):
+        class Response:
+            status = 200
+
+            def __init__(self, body=b"recovered", read_error=None):
+                self.headers = Message()
+                self.body = body
+                self.read_error = read_error
+                self.closed = False
+
+            def read(self, _limit):
+                if self.read_error is not None:
+                    raise self.read_error
+                return self.body
+
+            def close(self):
+                self.closed = True
+
+        class Opener:
+            def __init__(self, failures, response=None):
+                self.failures = failures
+                self.attempts = 0
+                self.response = response or Response()
+
+            def open(self, _request, *, timeout):
+                self.attempts += 1
+                if self.attempts <= self.failures:
+                    raise urllib.error.URLError("temporary transport failure")
+                return self.response
+
+        recovered = Opener(2)
+        with patch.object(ROLLOUT.urllib.request, "build_opener", return_value=recovered):
+            result = ROLLOUT.live_response("https://example.invalid/readback", 2.0)
+        self.assertEqual(recovered.attempts, 3)
+        self.assertTrue(recovered.response.closed)
+        self.assertEqual(base64.b64decode(result["bodyBase64"]), b"recovered")
+
+        exhausted = Opener(3)
+        with patch.object(ROLLOUT.urllib.request, "build_opener", return_value=exhausted):
+            with self.assertRaisesRegex(ROLLOUT.RolloutError, "request failed"):
+                ROLLOUT.live_response("https://example.invalid/readback", 2.0)
+        self.assertEqual(exhausted.attempts, 3)
+
+        status_body = io.BytesIO(b"status response")
+        status_error = urllib.error.HTTPError(
+            "https://example.invalid/readback",
+            503,
+            "Unavailable",
+            Message(),
+            status_body,
+        )
+        http_opener = Opener(0)
+        with patch.object(
+            http_opener, "open", side_effect=status_error
+        ) as status_open, patch.object(
+            ROLLOUT.urllib.request, "build_opener", return_value=http_opener
+        ):
+            result = ROLLOUT.live_response("https://example.invalid/readback", 2.0)
+        self.assertEqual(status_open.call_count, 1)
+        self.assertTrue(status_body.closed)
+        self.assertEqual(result["status"], 503)
+        self.assertEqual(base64.b64decode(result["bodyBase64"]), b"status response")
+
+        oversized = Opener(0, Response(b"x" * 4_194_305))
+        with patch.object(ROLLOUT.urllib.request, "build_opener", return_value=oversized):
+            with self.assertRaisesRegex(ROLLOUT.RolloutError, "exceeded 4 MiB"):
+                ROLLOUT.live_response("https://example.invalid/readback", 2.0)
+        self.assertTrue(oversized.response.closed)
+
+        read_failure = Opener(0, Response(read_error=RuntimeError("read failed")))
+        with patch.object(
+            ROLLOUT.urllib.request, "build_opener", return_value=read_failure
+        ):
+            with self.assertRaisesRegex(RuntimeError, "read failed"):
+                ROLLOUT.live_response("https://example.invalid/readback", 2.0)
+        self.assertTrue(read_failure.response.closed)
 
     def test_post_deploy_worker_must_be_proxy_mode(self):
         sources = [

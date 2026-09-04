@@ -1104,6 +1104,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def live_response(url: str, timeout: float) -> dict[str, object]:
+    total_attempts = 3
     opener = urllib.request.build_opener(NoRedirect)
     request = urllib.request.Request(
         url,
@@ -1112,18 +1113,27 @@ def live_response(url: str, timeout: float) -> dict[str, object]:
             "User-Agent": "Seasons-Provider-Actions-Readback/1",
         },
     )
+    for attempt in range(total_attempts):
+        try:
+            response = opener.open(request, timeout=timeout)
+            break
+        except urllib.error.HTTPError as error:
+            response = error
+            break
+        except (OSError, urllib.error.URLError) as error:
+            if attempt == total_attempts - 1:
+                raise RolloutError("canonical readback request failed") from error
     try:
-        response = opener.open(request, timeout=timeout)
-    except urllib.error.HTTPError as error:
-        response = error
-    except (OSError, urllib.error.URLError) as error:
-        raise RolloutError("canonical readback request failed") from error
-    body = response.read(4_194_305)
+        body = response.read(4_194_305)
+        status = response.status
+        headers = dict(response.headers.items())
+    finally:
+        response.close()
     if len(body) > 4_194_304:
         raise RolloutError("canonical readback response exceeded 4 MiB")
     return {
-        "status": response.status,
-        "headers": dict(response.headers.items()),
+        "status": status,
+        "headers": headers,
         "bodyBase64": base64.b64encode(body).decode("ascii"),
     }
 
