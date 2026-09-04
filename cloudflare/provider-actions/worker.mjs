@@ -115,13 +115,19 @@ function hasSafeOriginResponse(response, pathname) {
   }
 
   const pair = pathname.match(CANONICAL_ACTION_PATH);
+  const provider = response.headers.get(PROVIDER_HEADER);
+  const region = response.headers.get(REGION_HEADER);
   if (pair === null) {
+    return provider === null && region === null;
+  }
+  if (
+    (response.status === 400 || response.status === 404) &&
+    provider === null &&
+    region === null
+  ) {
     return true;
   }
-  return (
-    response.headers.get(PROVIDER_HEADER) === pair[1] &&
-    response.headers.get(REGION_HEADER) === pair[2]
-  );
+  return provider === pair[1] && region === pair[2];
 }
 
 function publicResponse(response, pathname) {

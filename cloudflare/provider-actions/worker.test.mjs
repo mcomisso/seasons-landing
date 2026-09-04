@@ -315,6 +315,56 @@ test("fails closed when a backend redirect omits Location", async () => {
   assert.equal(response.status, 502);
 });
 
+test("canonical invalid outcomes accept only absent or exact pair identity", async () => {
+  const cases = [
+    [400, RELEASE_HEADERS, 400],
+    [404, RELEASE_HEADERS, 404],
+    [400, PAIR_HEADERS, 400],
+    [400, { ...RELEASE_HEADERS, "X-Seasons-Provider-Actions-Region": "GB" }, 502],
+    [404, { ...PAIR_HEADERS, "X-Seasons-Provider-Actions-Provider": "9" }, 502],
+  ];
+
+  for (const [originStatus, headers, expectedStatus] of cases) {
+    const response = await worker.fetch(
+      new Request("https://getseasons.app/provider-actions/cancel/8/GB/"),
+      ENV,
+      {
+        fetch: async () =>
+          new Response("invalid outcome", { status: originStatus, headers }),
+      }
+    );
+
+    assert.equal(response.status, expectedStatus);
+  }
+});
+
+test("noncanonical invalid paths reject any pair identity", async () => {
+  const cases = [
+    ["/provider-actions/start%2F8%2FGB%2F", 400, RELEASE_HEADERS, 400],
+    [
+      "/provider-actions/start%2F8%2FGB%2F",
+      400,
+      { ...RELEASE_HEADERS, "X-Seasons-Provider-Actions-Region": "GB" },
+      502,
+    ],
+    ["/provider-actions/cancel/08/GB/", 404, PAIR_HEADERS, 502],
+    ["/provider-actions/sitemap.xml?context=invalid", 400, PAIR_HEADERS, 502],
+  ];
+
+  for (const [path, originStatus, headers, expectedStatus] of cases) {
+    const response = await worker.fetch(
+      new Request(`https://getseasons.app${path}`),
+      ENV,
+      {
+        fetch: async () =>
+          new Response("invalid outcome", { status: originStatus, headers }),
+      }
+    );
+
+    assert.equal(response.status, expectedStatus);
+  }
+});
+
 for (const [name, headers] of [
   ["missing pair identity", RELEASE_HEADERS],
   [
