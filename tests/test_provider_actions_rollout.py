@@ -10,6 +10,9 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).parents[1]
 TOOL = ROOT / "scripts/provider_actions_rollout.py"
+PRODUCTION_CONFIG = ROOT / "cloudflare/provider-actions/wrangler.toml"
+ACCOUNT_ID = "48039421df9478545ee479d6272049da"
+PRODUCTION_WORKER = "seasons-provider-actions-router"
 
 
 def run_tool(*args: str) -> subprocess.CompletedProcess[str]:
@@ -229,6 +232,118 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             self.assertNotIn("two", result.stderr)
             self.assertFalse(marker.exists())
 
+    def test_activate_proves_typed_identity_and_expected_worker_transition(self):
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            account = write_json(temporary / "account.json", {"id": ACCOUNT_ID})
+            zone = write_json(
+                temporary / "zone.json",
+                {"name": "getseasons.app", "accountId": ACCOUNT_ID},
+            )
+            routes = write_json(
+                temporary / "routes.json",
+                {
+                    "routes": [
+                        {
+                            "pattern": "getseasons.app/provider-actions",
+                            "script": PRODUCTION_WORKER,
+                        },
+                        {
+                            "pattern": "getseasons.app/provider-actions/*",
+                            "script": PRODUCTION_WORKER,
+                        },
+                    ]
+                },
+            )
+            worker = write_json(
+                temporary / "worker.json",
+                {"name": PRODUCTION_WORKER, "versionId": "before"},
+            )
+            after_worker = {"name": PRODUCTION_WORKER, "versionId": "after"}
+            expected_after = hashlib.sha256(
+                json.dumps(
+                    after_worker,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            fake_wrangler = temporary / "wrangler"
+            fake_wrangler.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "from pathlib import Path\n"
+                f"Path({str(worker)!r}).write_text(json.dumps({after_worker!r}))\n",
+                encoding="utf-8",
+            )
+            fake_wrangler.chmod(0o700)
+            config_sha = hashlib.sha256(PRODUCTION_CONFIG.read_bytes()).hexdigest()
+            plan = write_json(
+                temporary / "control.json",
+                {
+                    "schemaVersion": 1,
+                    "sources": [
+                        {
+                            "name": "account",
+                            "type": "cloudflare-account",
+                            "input": str(account),
+                        },
+                        {
+                            "name": "zone",
+                            "type": "cloudflare-zone",
+                            "input": str(zone),
+                        },
+                        {
+                            "name": "routes",
+                            "type": "cloudflare-routes",
+                            "input": str(routes),
+                        },
+                        {
+                            "name": "worker",
+                            "type": "cloudflare-worker",
+                            "input": str(worker),
+                        },
+                    ],
+                    "productionConfigSha256": config_sha,
+                    "activationCommand": [
+                        str(fake_wrangler),
+                        "deploy",
+                        "--config",
+                        str(PRODUCTION_CONFIG),
+                        "--name",
+                        PRODUCTION_WORKER,
+                    ],
+                    "expectedTransition": {
+                        "source": "worker",
+                        "afterSha256": expected_after,
+                    },
+                },
+            )
+            pin = temporary / "pin.json"
+            self.assertEqual(
+                run_tool("capture", "--plan", str(plan), "--output", str(pin)).returncode,
+                0,
+            )
+            output = temporary / "activation.json"
+
+            result = run_tool(
+                "activate",
+                "--plan",
+                str(plan),
+                "--pin",
+                str(pin),
+                "--output",
+                str(output),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["status"], "verified")
+            self.assertEqual(evidence["transitionSource"], "worker")
+            self.assertNotEqual(
+                evidence["beforeSha256"], evidence["afterSha256"]
+            )
+
     def test_verify_exhaustive_matrix_and_emit_hashed_evidence(self):
         with TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -326,6 +441,8 @@ class ProviderActionsRolloutTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             evidence = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["kind"], "provider-actions-readback-fixture")
+            self.assertEqual(evidence["transport"], "fixture")
             self.assertEqual(evidence["phase"], "production")
             self.assertEqual(evidence["releaseId"], "release-7")
             self.assertEqual(evidence["verifiedActionPairs"], 3)
@@ -387,6 +504,47 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("content type did not match", result.stderr)
             self.assertFalse(output.exists())
+
+    def test_staging_accepts_only_the_route_free_seasons_worker_origin(self):
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            plan, fixture, responses = minimal_readback_case(temporary)
+            staging_origin = (
+                "https://seasons-provider-actions-router-staging."
+                "teomatteo89.workers.dev"
+            )
+            production_origin = "https://getseasons.app"
+            staged_responses = {
+                url.replace(production_origin, staging_origin, 1): value
+                for url, value in responses.items()
+            }
+            write_json(fixture, staged_responses)
+            plan_value = json.loads(plan.read_text(encoding="utf-8"))
+            plan_value["canonicalOrigin"] = staging_origin
+            write_json(plan, plan_value)
+            output = temporary / "staging-evidence.json"
+
+            result = run_tool(
+                "verify",
+                "--phase",
+                "staging",
+                "--plan",
+                str(plan),
+                "--responses",
+                str(fixture),
+                "--output",
+                str(output),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["phase"], "staging")
+            self.assertTrue(
+                all(
+                    item["url"].startswith(staging_origin)
+                    for item in evidence["observations"]
+                )
+            )
 
     def test_rollback_phase_requires_and_verifies_restored_control_pin(self):
         with TemporaryDirectory() as directory:

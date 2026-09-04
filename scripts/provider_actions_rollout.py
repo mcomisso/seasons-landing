@@ -44,6 +44,20 @@ INVALID_PATHS = {
         400,
     ),
 }
+PRODUCTION_ORIGIN = "https://getseasons.app"
+STAGING_ORIGIN = (
+    "https://seasons-provider-actions-router-staging.teomatteo89.workers.dev"
+)
+SEASONS_ACCOUNT_ID = "48039421df9478545ee479d6272049da"
+SEASONS_ZONE = "getseasons.app"
+PRODUCTION_WORKER = "seasons-provider-actions-router"
+PRODUCTION_CONFIG = (
+    Path(__file__).parents[1] / "cloudflare/provider-actions/wrangler.toml"
+).resolve()
+PRODUCTION_ROUTES = {
+    ("getseasons.app/provider-actions", PRODUCTION_WORKER),
+    ("getseasons.app/provider-actions/*", PRODUCTION_WORKER),
+}
 
 
 def canonical_json(value: object) -> bytes:
@@ -152,21 +166,27 @@ def capture(plan_path: Path, output: Path) -> None:
     )
 
 
-def current_pins(
+def control_snapshot(
     sources: list[dict[str, object]], plan_directory: Path
-) -> list[dict[str, str]]:
-    return [
-        {
-            "name": str(source["name"]),
-            "sha256": hashlib.sha256(
-                canonical_json(source_value(source, plan_directory))
-            ).hexdigest(),
-        }
-        for source in sources
-    ]
+) -> tuple[list[dict[str, str]], dict[str, object]]:
+    pins = []
+    values = {}
+    for source in sources:
+        name = str(source["name"])
+        value = source_value(source, plan_directory)
+        values[name] = value
+        pins.append(
+            {
+                "name": name,
+                "sha256": hashlib.sha256(canonical_json(value)).hexdigest(),
+            }
+        )
+    return pins, values
 
 
-def compare_control_pin(plan_path: Path, pin_path: Path) -> tuple[dict[str, object], list[dict[str, str]]]:
+def compare_control_pin(
+    plan_path: Path, pin_path: Path
+) -> tuple[dict[str, object], list[dict[str, str]], dict[str, object]]:
     _, sources = load_control_plan(plan_path)
     pin = read_json(pin_path)
     if (
@@ -181,18 +201,61 @@ def compare_control_pin(plan_path: Path, pin_path: Path) -> tuple[dict[str, obje
         for item in pin["sources"]
         if isinstance(item, dict)
     }
-    observed = current_pins(sources, plan_path.resolve().parent)
+    observed, values = control_snapshot(sources, plan_path.resolve().parent)
     if set(expected) != {item["name"] for item in observed}:
         raise RolloutError("control pin source set changed")
     for item in observed:
         if expected[item["name"]] != item["sha256"]:
             raise RolloutError(f"control-plane source {item['name']} changed")
-    return pin, observed
+    return pin, observed, values
 
 
-def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
-    plan, sources = load_control_plan(plan_path)
-    pin, observed = compare_control_pin(plan_path, pin_path)
+def validate_activation_sources(
+    sources: list[dict[str, object]], values: dict[str, object]
+) -> None:
+    by_type: dict[str, tuple[str, object]] = {}
+    for source in sources:
+        source_type = source.get("type")
+        name = str(source["name"])
+        if not isinstance(source_type, str) or source_type in by_type:
+            raise RolloutError("activation control source types are invalid")
+        by_type[source_type] = (name, values[name])
+    required = {
+        "cloudflare-account",
+        "cloudflare-zone",
+        "cloudflare-routes",
+        "cloudflare-worker",
+    }
+    if set(by_type) != required:
+        raise RolloutError("activation needs the four typed Cloudflare sources")
+    account = by_type["cloudflare-account"][1]
+    if not isinstance(account, dict) or account.get("id") != SEASONS_ACCOUNT_ID:
+        raise RolloutError("Cloudflare account identity did not match Seasons")
+    zone = by_type["cloudflare-zone"][1]
+    if (
+        not isinstance(zone, dict)
+        or zone.get("name") != SEASONS_ZONE
+        or zone.get("accountId") != SEASONS_ACCOUNT_ID
+    ):
+        raise RolloutError("Cloudflare zone identity did not match Seasons")
+    routes_value = by_type["cloudflare-routes"][1]
+    routes = routes_value.get("routes") if isinstance(routes_value, dict) else None
+    if not isinstance(routes, list) or any(not isinstance(route, dict) for route in routes):
+        raise RolloutError("Cloudflare routes response is invalid")
+    observed_routes = {(route.get("pattern"), route.get("script")) for route in routes}
+    if observed_routes != PRODUCTION_ROUTES or len(routes) != len(PRODUCTION_ROUTES):
+        raise RolloutError("Cloudflare routes did not match the exact production pair")
+    worker = by_type["cloudflare-worker"][1]
+    if (
+        not isinstance(worker, dict)
+        or worker.get("name") != PRODUCTION_WORKER
+        or not isinstance(worker.get("versionId"), str)
+        or not worker["versionId"]
+    ):
+        raise RolloutError("Cloudflare production Worker identity is invalid")
+
+
+def validate_activation_command(plan: dict[str, object]) -> list[str]:
     command = plan.get("activationCommand")
     if (
         not isinstance(command, list)
@@ -200,6 +263,49 @@ def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
         or not all(isinstance(part, str) and part for part in command)
     ):
         raise RolloutError("control plan needs an activation command")
+    arguments = command[1:]
+    if Path(command[0]).name == "npx":
+        if not arguments or arguments[0] != "wrangler":
+            raise RolloutError("activation command must target Wrangler")
+        arguments = arguments[1:]
+    elif Path(command[0]).name != "wrangler":
+        raise RolloutError("activation command must target Wrangler")
+    if len(arguments) != 5 or arguments[:2] != ["deploy", "--config"]:
+        raise RolloutError("activation command is not the pinned production deploy")
+    if arguments[3:5] != ["--name", PRODUCTION_WORKER]:
+        raise RolloutError("activation command targets the wrong Worker")
+    config = Path(arguments[2])
+    if not config.is_absolute():
+        config = Path(__file__).parents[1] / config
+    if config.resolve() != PRODUCTION_CONFIG:
+        raise RolloutError("activation command targets the wrong config")
+    expected_config_sha = plan.get("productionConfigSha256")
+    if (
+        not isinstance(expected_config_sha, str)
+        or hashlib.sha256(PRODUCTION_CONFIG.read_bytes()).hexdigest()
+        != expected_config_sha
+    ):
+        raise RolloutError("production config pin did not match")
+    return command
+
+
+def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
+    plan, sources = load_control_plan(plan_path)
+    pin, observed, before_values = compare_control_pin(plan_path, pin_path)
+    validate_activation_sources(sources, before_values)
+    command = validate_activation_command(plan)
+    transition = plan.get("expectedTransition")
+    if (
+        not isinstance(transition, dict)
+        or not isinstance(transition.get("source"), str)
+        or not isinstance(transition.get("afterSha256"), str)
+        or len(transition["afterSha256"]) != 64
+    ):
+        raise RolloutError("control plan needs an expected transition")
+    transition_source = transition["source"]
+    source_types = {str(source["name"]): source.get("type") for source in sources}
+    if source_types.get(transition_source) != "cloudflare-worker":
+        raise RolloutError("expected transition must target the production Worker")
     completed = subprocess.run(
         command,
         stdin=subprocess.DEVNULL,
@@ -210,6 +316,21 @@ def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
     )
     if completed.returncode != 0:
         raise RolloutError(f"activation failed with exit {completed.returncode}")
+    after, after_values = control_snapshot(sources, plan_path.resolve().parent)
+    validate_activation_sources(sources, after_values)
+    before_by_name = {item["name"]: item["sha256"] for item in observed}
+    after_by_name = {item["name"]: item["sha256"] for item in after}
+    if any(
+        after_by_name[name] != digest
+        for name, digest in before_by_name.items()
+        if name != transition_source
+    ):
+        raise RolloutError("non-target control-plane state changed during activation")
+    if (
+        after_by_name[transition_source] == before_by_name[transition_source]
+        or after_by_name[transition_source] != transition["afterSha256"]
+    ):
+        raise RolloutError("production Worker did not reach the expected state")
     write_evidence(
         output,
         {
@@ -219,8 +340,11 @@ def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
             "activationCommandSha256": hashlib.sha256(
                 canonical_json(command)
             ).hexdigest(),
-            "sources": observed,
-            "status": "executed",
+            "sources": after,
+            "transitionSource": transition_source,
+            "beforeSha256": before_by_name[transition_source],
+            "afterSha256": after_by_name[transition_source],
+            "status": "verified",
         },
     )
 
@@ -375,8 +499,9 @@ def verify(
     if not isinstance(plan, dict) or plan.get("schemaVersion") != 1:
         raise RolloutError("unsupported readback plan")
     origin = plan.get("canonicalOrigin")
-    if origin != "https://getseasons.app":
-        raise RolloutError("canonical origin must be https://getseasons.app")
+    expected_origin = STAGING_ORIGIN if phase == "staging" else PRODUCTION_ORIGIN
+    if origin != expected_origin:
+        raise RolloutError(f"{phase} origin must be {expected_origin}")
     release_value = plan.get("release")
     if not isinstance(release_value, str) or not release_value:
         raise RolloutError("readback plan needs a release artifact")
@@ -420,12 +545,12 @@ def verify(
     if phase == "rollback":
         if control_plan_path is None or control_pin_path is None:
             raise RolloutError("rollback verification needs a control plan and pin")
-        control_pin, _ = compare_control_pin(control_plan_path, control_pin_path)
+        control_pin, _, _ = compare_control_pin(control_plan_path, control_pin_path)
         control_pin_sha256 = hashlib.sha256(canonical_json(control_pin)).hexdigest()
     elif control_plan_path is not None or control_pin_path is not None:
         if control_plan_path is None or control_pin_path is None:
             raise RolloutError("control plan and pin must be supplied together")
-        control_pin, _ = compare_control_pin(control_plan_path, control_pin_path)
+        control_pin, _, _ = compare_control_pin(control_plan_path, control_pin_path)
         control_pin_sha256 = hashlib.sha256(canonical_json(control_pin)).hexdigest()
     def verify_pair(pair: tuple[str, int]) -> tuple[list[dict[str, object]], str | None]:
         region, provider = pair
@@ -456,7 +581,10 @@ def verify(
             else:
                 if cancel_headers.get("x-robots-tag") != "index" or any(step.encode() not in cancel_body for step in steps) or source_url.encode() not in cancel_body:
                     raise RolloutError("fresh cancellation response did not match its guide")
-                fresh_url = cancel_url
+                fresh_url = (
+                    f"{PRODUCTION_ORIGIN}/provider-actions/cancel/"
+                    f"{provider}/{region}/"
+                )
         destination = destinations.get(str(provider))
         if destination is not None and not isinstance(destination, str):
             raise RolloutError("release start destination is invalid")
@@ -535,7 +663,12 @@ def verify(
         pages.append({"url": url, "status": status, "sha256": digest})
     evidence: dict[str, object] = {
         "schemaVersion": 1,
-        "kind": "provider-actions-readback",
+        "kind": (
+            "provider-actions-readback"
+            if responses_path is None
+            else "provider-actions-readback-fixture"
+        ),
+        "transport": "live" if responses_path is None else "fixture",
         "phase": phase,
         "releaseId": release_id,
         "releaseSealSha256": release["sealSha256"],
