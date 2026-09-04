@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -18,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 
 class RolloutError(Exception):
@@ -54,10 +55,20 @@ PRODUCTION_WORKER = "seasons-provider-actions-router"
 PRODUCTION_CONFIG = (
     Path(__file__).parents[1] / "cloudflare/provider-actions/wrangler.toml"
 ).resolve()
+SAFE_BASELINE_CONFIG = (
+    Path(__file__).parents[1]
+    / "cloudflare/provider-actions/wrangler.safe-baseline.toml"
+).resolve()
 PRODUCTION_ROUTES = {
     ("getseasons.app/provider-actions", PRODUCTION_WORKER),
     ("getseasons.app/provider-actions/*", PRODUCTION_WORKER),
 }
+REPRESENTATIVE_PAGES = {
+    "https://getseasons.app/",
+    "https://getseasons.app/privacy.html",
+    "https://getseasons.app/terms.html",
+}
+CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
 
 
 def canonical_json(value: object) -> bytes:
@@ -88,6 +99,163 @@ def write_evidence(path: Path, value: object) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def read_wrangler_oauth_token() -> str:
+    completed = subprocess.run(
+        ["npx", "--yes", "wrangler@4.129.0", "whoami"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=60,
+    )
+    if completed.returncode != 0:
+        raise RolloutError("pinned Wrangler authentication check failed")
+    candidates = (
+        Path.home() / "Library/Preferences/.wrangler/config/default.toml",
+        Path.home() / ".wrangler/config/default.toml",
+    )
+    for path in candidates:
+        try:
+            value = tomllib.loads(path.read_text(encoding="utf-8")).get("oauth_token")
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            continue
+        if isinstance(value, str) and value:
+            return value
+    raise RolloutError("Wrangler OAuth token is unavailable")
+
+
+def cloudflare_api_get(
+    path: str, token: str, *, allow_not_found: bool = False
+) -> object:
+    request = urllib.request.Request(
+        f"{CLOUDFLARE_API}{path}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read(4_194_305))
+    except urllib.error.HTTPError as error:
+        if allow_not_found and error.code == 404:
+            return {"success": True, "result": None}
+        raise RolloutError("Cloudflare control-plane read failed") from error
+    except (OSError, UnicodeError, urllib.error.URLError, json.JSONDecodeError) as error:
+        raise RolloutError("Cloudflare control-plane read failed") from error
+    if (
+        not isinstance(payload, dict)
+        or payload.get("success") is False
+        or "result" not in payload
+    ):
+        raise RolloutError("Cloudflare control-plane response is invalid")
+    return payload
+
+
+def normalize_cloudflare_state(kind: str, payloads: dict[str, object]) -> object:
+    account_payload = payloads.get("account")
+    account = account_payload.get("result") if isinstance(account_payload, dict) else None
+    if not isinstance(account, dict) or account.get("id") != SEASONS_ACCOUNT_ID:
+        raise RolloutError("Cloudflare account identity did not match Seasons")
+    if kind == "account":
+        return {"id": SEASONS_ACCOUNT_ID}
+    zone_payload = payloads.get("zone")
+    zones = zone_payload.get("result") if isinstance(zone_payload, dict) else None
+    if (
+        not isinstance(zones, list)
+        or len(zones) != 1
+        or not isinstance(zones[0], dict)
+        or zones[0].get("name") != SEASONS_ZONE
+        or not isinstance(zones[0].get("account"), dict)
+        or zones[0]["account"].get("id") != SEASONS_ACCOUNT_ID
+    ):
+        raise RolloutError("Cloudflare zone identity did not match Seasons")
+    if kind == "zone":
+        return {"name": SEASONS_ZONE, "accountId": SEASONS_ACCOUNT_ID}
+    if kind == "routes":
+        route_payload = payloads.get("routes")
+        routes = route_payload.get("result") if isinstance(route_payload, dict) else None
+        if not isinstance(routes, list) or any(not isinstance(item, dict) for item in routes):
+            raise RolloutError("Cloudflare routes response is invalid")
+        return {
+            "routes": sorted(
+                (
+                    {"pattern": item.get("pattern"), "script": item.get("script")}
+                    for item in routes
+                ),
+                key=lambda item: str(item["pattern"]),
+            )
+        }
+    deployments_payload = payloads.get("deployments")
+    result = (
+        deployments_payload.get("result")
+        if isinstance(deployments_payload, dict)
+        else None
+    )
+    deployments = result.get("deployments") if isinstance(result, dict) else None
+    versions = (
+        deployments[0].get("versions")
+        if isinstance(deployments, list)
+        and deployments
+        and isinstance(deployments[0], dict)
+        else []
+    )
+    active = [
+        item
+        for item in versions
+        if isinstance(item, dict) and item.get("percentage") == 100
+    ]
+    if len(active) > 1:
+        raise RolloutError("Cloudflare Worker deployment is not singular")
+    version_id = active[0].get("version_id") if active else None
+    settings_payload = payloads.get("settings")
+    settings = settings_payload.get("result") if isinstance(settings_payload, dict) else None
+    bindings = settings.get("bindings") if isinstance(settings, dict) else []
+    mode = next(
+        (
+            binding.get("text", binding.get("value"))
+            for binding in bindings
+            if isinstance(binding, dict)
+            and binding.get("name") == "SEASONS_PROVIDER_ACTIONS_MODE"
+        ),
+        None,
+    )
+    return {"name": PRODUCTION_WORKER, "versionId": version_id, "mode": mode}
+
+
+def cloudflare_state(kind: str, responses_path: Path | None) -> None:
+    if responses_path is not None:
+        payloads = read_json(responses_path)
+        if not isinstance(payloads, dict):
+            raise RolloutError("Cloudflare response fixture is invalid")
+    else:
+        token = read_wrangler_oauth_token()
+        payloads = {
+            "account": cloudflare_api_get(
+                f"/accounts/{SEASONS_ACCOUNT_ID}", token
+            )
+        }
+        if kind != "account":
+            query = urlencode(
+                {"name": SEASONS_ZONE, "account.id": SEASONS_ACCOUNT_ID}
+            )
+            payloads["zone"] = cloudflare_api_get(f"/zones?{query}", token)
+        if kind == "routes":
+            zone_result = payloads["zone"]
+            assert isinstance(zone_result, dict)
+            zone_id = zone_result["result"][0]["id"]
+            payloads["routes"] = cloudflare_api_get(
+                f"/zones/{zone_id}/workers/routes", token
+            )
+        if kind == "worker":
+            prefix = f"/accounts/{SEASONS_ACCOUNT_ID}/workers/scripts/{PRODUCTION_WORKER}"
+            payloads["deployments"] = cloudflare_api_get(
+                f"{prefix}/deployments", token, allow_not_found=True
+            )
+            payloads["settings"] = cloudflare_api_get(
+                f"{prefix}/settings", token, allow_not_found=True
+            )
+    value = normalize_cloudflare_state(kind, payloads)
+    sys.stdout.buffer.write(canonical_json(value) + b"\n")
 
 
 def source_value(source: dict[str, object], plan_directory: Path) -> object:
@@ -309,6 +477,55 @@ def validate_activation_command(plan: dict[str, object]) -> list[str]:
     return command
 
 
+def validate_rollback_command(
+    plan: dict[str, object], profile: str
+) -> tuple[list[str], str | None]:
+    command = plan.get("rollbackCommand")
+    if (
+        not isinstance(command, list)
+        or not command
+        or not all(isinstance(part, str) and part for part in command)
+        or Path(command[0]).name != "npx"
+        or command[1:3] != ["--yes", "wrangler@4.129.0"]
+    ):
+        raise RolloutError("rollback command must use pinned Wrangler 4.129.0")
+    arguments = command[3:]
+    expected_config = (
+        PRODUCTION_CONFIG if profile == "predecessor" else SAFE_BASELINE_CONFIG
+    )
+    target_version = None
+    if profile == "predecessor":
+        if (
+            len(arguments) != 7
+            or arguments[0] != "rollback"
+            or arguments[2] != "--config"
+            or arguments[4:] != ["--name", PRODUCTION_WORKER, "--yes"]
+        ):
+            raise RolloutError("normal rollback command is invalid")
+        target_version = arguments[1]
+        config_argument = arguments[3]
+    else:
+        if (
+            len(arguments) != 5
+            or arguments[:2] != ["deploy", "--config"]
+            or arguments[3:] != ["--name", PRODUCTION_WORKER]
+        ):
+            raise RolloutError("safe-baseline rollback command is invalid")
+        config_argument = arguments[2]
+    config = Path(config_argument)
+    if not config.is_absolute():
+        config = Path(__file__).parents[1] / config
+    if config.resolve() != expected_config:
+        raise RolloutError("rollback command targets the wrong config")
+    expected_sha = plan.get("rollbackConfigSha256")
+    if (
+        not isinstance(expected_sha, str)
+        or hashlib.sha256(expected_config.read_bytes()).hexdigest() != expected_sha
+    ):
+        raise RolloutError("rollback config pin did not match")
+    return command, target_version
+
+
 def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
     plan, sources = load_control_plan(plan_path)
     pin, observed, before_values = compare_control_pin(plan_path, pin_path)
@@ -371,6 +588,133 @@ def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
             "status": "verified",
         },
     )
+
+
+def control_proof(
+    sources: list[dict[str, object]], values: dict[str, object]
+) -> dict[str, object]:
+    by_type = {source.get("type"): values[str(source["name"])] for source in sources}
+    worker = by_type["cloudflare-worker"]
+    assert isinstance(worker, dict)
+    return {
+        "accountId": SEASONS_ACCOUNT_ID,
+        "zone": SEASONS_ZONE,
+        "routes": sorted(pattern for pattern, _ in PRODUCTION_ROUTES),
+        "worker": PRODUCTION_WORKER,
+        "workerVersionId": worker["versionId"],
+        "workerMode": worker.get("mode"),
+    }
+
+
+def rollback(
+    profile: str,
+    control_plan_path: Path,
+    current_pin_path: Path,
+    target_pin_path: Path | None,
+    readback_plan_path: Path,
+    responses_path: Path | None,
+    output: Path,
+    concurrency: int,
+    request_timeout: float,
+) -> None:
+    plan, sources = load_control_plan(control_plan_path)
+    current_pin, before, before_values = compare_control_pin(
+        control_plan_path, current_pin_path
+    )
+    validate_activation_sources(sources, before_values, after_activation=True)
+    command, target_version = validate_rollback_command(plan, profile)
+    if profile == "predecessor" and target_pin_path is None:
+        raise RolloutError("normal rollback needs a target pin")
+    if profile == "safe-baseline" and target_pin_path is not None:
+        raise RolloutError("safe-baseline rollback does not accept a target pin")
+    completed = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=300,
+    )
+    if completed.returncode != 0:
+        raise RolloutError(f"rollback failed with exit {completed.returncode}")
+    after, after_values = control_snapshot(
+        sources, control_plan_path.resolve().parent
+    )
+    validate_activation_sources(sources, after_values, after_activation=True)
+    worker_source = next(
+        str(source["name"])
+        for source in sources
+        if source.get("type") == "cloudflare-worker"
+    )
+    before_by_name = {item["name"]: item["sha256"] for item in before}
+    after_by_name = {item["name"]: item["sha256"] for item in after}
+    if profile == "predecessor":
+        assert target_pin_path is not None and target_version is not None
+        target_pin, _, target_values = compare_control_pin(
+            control_plan_path, target_pin_path
+        )
+        worker = target_values[worker_source]
+        if not isinstance(worker, dict) or worker.get("versionId") != target_version:
+            raise RolloutError("restored Worker did not match the rollback target")
+        verification_pin_path = target_pin_path
+        after_pin = target_pin
+    else:
+        if any(
+            digest != after_by_name[name]
+            for name, digest in before_by_name.items()
+            if name != worker_source
+        ):
+            raise RolloutError("non-Worker control state changed during rollback")
+        worker = after_values[worker_source]
+        assert isinstance(worker, dict)
+        if (
+            worker.get("mode") != "safe-baseline"
+            or worker.get("versionId") == before_values[worker_source].get("versionId")
+        ):
+            raise RolloutError("safe-baseline Worker transition did not match")
+        after_pin = {
+            "schemaVersion": 1,
+            "kind": "provider-actions-control-pin",
+            "sources": after,
+        }
+        verification_pin_path = None
+    with tempfile.TemporaryDirectory(prefix="provider-actions-rollback-") as directory:
+        temporary = Path(directory)
+        if verification_pin_path is None:
+            verification_pin_path = temporary / "post-pin.json"
+            write_evidence(verification_pin_path, after_pin)
+        readback_output = temporary / "readback.json"
+        verify(
+            "rollback",
+            readback_plan_path,
+            responses_path,
+            readback_output,
+            control_plan_path,
+            verification_pin_path,
+            concurrency,
+            request_timeout,
+        )
+        evidence = read_json(readback_output)
+    assert isinstance(evidence, dict)
+    evidence.update(
+        {
+            "operation": "rollback-executed",
+            "rollbackProfile": profile,
+            "rollbackCommandSha256": hashlib.sha256(
+                canonical_json(command)
+            ).hexdigest(),
+            "controlBeforePinSha256": hashlib.sha256(
+                canonical_json(current_pin)
+            ).hexdigest(),
+            "controlAfterPinSha256": hashlib.sha256(
+                canonical_json(after_pin)
+            ).hexdigest(),
+            "controlProof": control_proof(sources, after_values),
+        }
+    )
+    evidence.pop("evidenceSha256", None)
+    evidence["evidenceSha256"] = hashlib.sha256(canonical_json(evidence)).hexdigest()
+    write_evidence(output, evidence)
 
 
 def parse_time(value: object, field: str) -> datetime:
@@ -556,6 +900,15 @@ def verify(
     expected_origin = STAGING_ORIGIN if phase == "staging" else PRODUCTION_ORIGIN
     if origin != expected_origin:
         raise RolloutError(f"{phase} origin must be {expected_origin}")
+    if phase in {"production", "rollback"}:
+        unrelated = plan.get("unrelatedPages")
+        urls = {
+            page.get("url")
+            for page in unrelated
+            if isinstance(page, dict)
+        } if isinstance(unrelated, list) else set()
+        if urls != REPRESENTATIVE_PAGES or len(unrelated or []) != len(urls):
+            raise RolloutError("readback plan needs the fixed unrelated Pages allowlist")
     release_value = plan.get("release")
     if not isinstance(release_value, str) or not release_value:
         raise RolloutError("readback plan needs a release artifact")
@@ -814,6 +1167,11 @@ def bounded_timeout(value: str) -> float:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
+    state_parser = commands.add_parser("cloudflare-state")
+    state_parser.add_argument(
+        "--kind", choices=("account", "zone", "routes", "worker"), required=True
+    )
+    state_parser.add_argument("--responses", type=Path)
     capture_parser = commands.add_parser("capture")
     capture_parser.add_argument("--plan", type=Path, required=True)
     capture_parser.add_argument("--output", type=Path, required=True)
@@ -821,6 +1179,20 @@ def parser() -> argparse.ArgumentParser:
     activate_parser.add_argument("--plan", type=Path, required=True)
     activate_parser.add_argument("--pin", type=Path, required=True)
     activate_parser.add_argument("--output", type=Path, required=True)
+    rollback_parser = commands.add_parser("rollback")
+    rollback_parser.add_argument(
+        "--profile", choices=("predecessor", "safe-baseline"), required=True
+    )
+    rollback_parser.add_argument("--control-plan", type=Path, required=True)
+    rollback_parser.add_argument("--current-pin", type=Path, required=True)
+    rollback_parser.add_argument("--target-pin", type=Path)
+    rollback_parser.add_argument("--readback-plan", type=Path, required=True)
+    rollback_parser.add_argument("--responses", type=Path)
+    rollback_parser.add_argument("--concurrency", type=bounded_concurrency, default=16)
+    rollback_parser.add_argument(
+        "--request-timeout", type=bounded_timeout, default=20.0
+    )
+    rollback_parser.add_argument("--output", type=Path, required=True)
     verify_parser = commands.add_parser("verify")
     verify_parser.add_argument(
         "--phase", choices=("staging", "production", "rollback"), required=True
@@ -840,10 +1212,24 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:
-        if arguments.command == "capture":
+        if arguments.command == "cloudflare-state":
+            cloudflare_state(arguments.kind, arguments.responses)
+        elif arguments.command == "capture":
             capture(arguments.plan, arguments.output)
         elif arguments.command == "activate":
             activate(arguments.plan, arguments.pin, arguments.output)
+        elif arguments.command == "rollback":
+            rollback(
+                arguments.profile,
+                arguments.control_plan,
+                arguments.current_pin,
+                arguments.target_pin,
+                arguments.readback_plan,
+                arguments.responses,
+                arguments.output,
+                arguments.concurrency,
+                arguments.request_timeout,
+            )
         elif arguments.command == "verify":
             verify(
                 arguments.phase,

@@ -1,11 +1,14 @@
 import base64
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).parents[1]
@@ -13,6 +16,12 @@ TOOL = ROOT / "scripts/provider_actions_rollout.py"
 PRODUCTION_CONFIG = ROOT / "cloudflare/provider-actions/wrangler.toml"
 ACCOUNT_ID = "48039421df9478545ee479d6272049da"
 PRODUCTION_WORKER = "seasons-provider-actions-router"
+REPRESENTATIVE_PATHS = ("/", "/privacy.html", "/terms.html")
+
+SPEC = importlib.util.spec_from_file_location("provider_actions_rollout", TOOL)
+assert SPEC is not None and SPEC.loader is not None
+ROLLOUT = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(ROLLOUT)
 
 
 def run_tool(*args: str) -> subprocess.CompletedProcess[str]:
@@ -141,6 +150,16 @@ def minimal_readback_case(temporary: Path):
         "/provider-actions/sitemap.xml?context=invalid": 400,
     }.items():
         responses[f"{origin}{path}"] = response(status, release="safe-release")
+    unrelated_pages = []
+    for path in REPRESENTATIVE_PATHS:
+        body = f"unchanged page {path}"
+        responses[f"{origin}{path}"] = response(200, body=body)
+        unrelated_pages.append(
+            {
+                "url": f"{origin}{path}",
+                "sha256": hashlib.sha256(body.encode()).hexdigest(),
+            }
+        )
     plan = write_json(
         temporary / "readback.json",
         {
@@ -149,7 +168,7 @@ def minimal_readback_case(temporary: Path):
             "release": str(release_path),
             "at": "2026-09-04T00:00:00Z",
             "switchCases": [],
-            "unrelatedPages": [],
+            "unrelatedPages": unrelated_pages,
         },
     )
     fixture = write_json(temporary / "responses.json", responses)
@@ -157,6 +176,49 @@ def minimal_readback_case(temporary: Path):
 
 
 class ProviderActionsRolloutTests(unittest.TestCase):
+    def test_cloudflare_worker_not_found_normalizes_as_absent(self):
+        missing = urllib.error.HTTPError(
+            "https://api.cloudflare.invalid/worker", 404, "Not Found", None, None
+        )
+        with patch.object(ROLLOUT.urllib.request, "urlopen", side_effect=missing):
+            value = ROLLOUT.cloudflare_api_get(
+                "/worker", "DO NOT COPY", allow_not_found=True
+            )
+
+        self.assertEqual(value, {"success": True, "result": None})
+
+    def test_cloudflare_state_normalizes_api_responses_without_secrets(self):
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            fixture = write_json(
+                temporary / "cloudflare.json",
+                {
+                    "account": {"result": {"id": ACCOUNT_ID, "name": "MYV Studios", "secret": "DO NOT COPY"}},
+                    "zone": {"result": [{"id": "zone-id", "name": "getseasons.app", "account": {"id": ACCOUNT_ID}}]},
+                    "routes": {"result": [{"pattern": "getseasons.app/provider-actions", "script": PRODUCTION_WORKER}, {"pattern": "getseasons.app/provider-actions/*", "script": PRODUCTION_WORKER}]},
+                    "deployments": {"result": {"deployments": [{"versions": [{"version_id": "version-7", "percentage": 100}]}]}},
+                    "settings": {"result": {"bindings": [{"name": "SEASONS_PROVIDER_ACTIONS_MODE", "type": "plain_text", "text": "proxy"}]}},
+                },
+            )
+
+            values = {}
+            for kind in ("account", "zone", "routes", "worker"):
+                result = run_tool(
+                    "cloudflare-state",
+                    "--kind",
+                    kind,
+                    "--responses",
+                    str(fixture),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("DO NOT COPY", result.stdout)
+                values[kind] = json.loads(result.stdout)
+
+            self.assertEqual(values["account"], {"id": ACCOUNT_ID})
+            self.assertEqual(values["zone"], {"name": "getseasons.app", "accountId": ACCOUNT_ID})
+            self.assertEqual(len(values["routes"]["routes"]), 2)
+            self.assertEqual(values["worker"], {"name": PRODUCTION_WORKER, "versionId": "version-7", "mode": "proxy"})
+
     def test_capture_pins_canonical_json_without_copying_source_values(self):
         with TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -398,8 +460,12 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                 "/provider-actions/sitemap.xml?context=invalid": 400,
             }.items():
                 responses[f"{origin}{path}"] = response(status, release="release-7")
-            page_body = "unchanged landing page"
-            responses[f"{origin}/privacy"] = response(200, body=page_body)
+            page_bodies = {
+                path: f"unchanged landing page {path}"
+                for path in REPRESENTATIVE_PATHS
+            }
+            for path, body in page_bodies.items():
+                responses[f"{origin}{path}"] = response(200, body=body)
             fixture = write_json(temporary / "responses.json", responses)
             plan = write_json(
                 temporary / "readback.json",
@@ -419,9 +485,10 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                     ],
                     "unrelatedPages": [
                         {
-                            "url": f"{origin}/privacy",
-                            "sha256": hashlib.sha256(page_body.encode()).hexdigest(),
+                            "url": f"{origin}{path}",
+                            "sha256": hashlib.sha256(body.encode()).hexdigest(),
                         }
+                        for path, body in page_bodies.items()
                     ],
                 },
             )
@@ -455,7 +522,7 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             self.assertEqual(evidence["requestTimeoutSeconds"], 7.5)
             self.assertEqual(evidence["invalidChecks"], 5)
             self.assertEqual(evidence["switchCases"], ["netflix-to-provider-9"])
-            self.assertEqual(evidence["unrelatedPages"][0]["sha256"], hashlib.sha256(page_body.encode()).hexdigest())
+            self.assertEqual(len(evidence["unrelatedPages"]), 3)
             self.assertRegex(evidence["evidenceSha256"], r"^[0-9a-f]{64}$")
             self.assertNotIn("OLD SECRET STEP", output.read_text(encoding="utf-8"))
 
@@ -509,6 +576,31 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             self.assertIn("content type did not match", result.stderr)
             self.assertFalse(output.exists())
 
+    def test_production_requires_the_fixed_unrelated_pages_allowlist(self):
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            plan, fixture, _ = minimal_readback_case(temporary)
+            plan_value = json.loads(plan.read_text(encoding="utf-8"))
+            plan_value["unrelatedPages"] = []
+            write_json(plan, plan_value)
+            output = temporary / "evidence.json"
+
+            result = run_tool(
+                "verify",
+                "--phase",
+                "production",
+                "--plan",
+                str(plan),
+                "--responses",
+                str(fixture),
+                "--output",
+                str(output),
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("fixed unrelated Pages allowlist", result.stderr)
+            self.assertFalse(output.exists())
+
     def test_staging_accepts_only_the_route_free_seasons_worker_origin(self):
         with TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -525,6 +617,7 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             write_json(fixture, staged_responses)
             plan_value = json.loads(plan.read_text(encoding="utf-8"))
             plan_value["canonicalOrigin"] = staging_origin
+            plan_value["unrelatedPages"] = []
             write_json(plan, plan_value)
             output = temporary / "staging-evidence.json"
 
@@ -614,24 +707,81 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                 )
                 for path in action_paths
             }
-            page_body = "unchanged privacy page"
-            responses[f"{origin}/privacy"] = response(200, body=page_body)
+            page_bodies = {
+                path: f"unchanged rollback page {path}"
+                for path in REPRESENTATIVE_PATHS
+            }
+            for path, body in page_bodies.items():
+                responses[f"{origin}{path}"] = response(200, body=body)
             write_json(fixture, responses)
             plan_value = json.loads(plan.read_text(encoding="utf-8"))
             plan_value["rollbackProfile"] = "safe-baseline"
             plan_value["unrelatedPages"] = [
                 {
-                    "url": f"{origin}/privacy",
-                    "sha256": hashlib.sha256(page_body.encode()).hexdigest(),
+                    "url": f"{origin}{path}",
+                    "sha256": hashlib.sha256(body.encode()).hexdigest(),
                 }
+                for path, body in page_bodies.items()
             ]
             write_json(plan, plan_value)
-            state = write_json(temporary / "state.json", {"mode": "safe-baseline"})
+            account = write_json(temporary / "account.json", {"id": ACCOUNT_ID})
+            zone = write_json(
+                temporary / "zone.json",
+                {"name": "getseasons.app", "accountId": ACCOUNT_ID},
+            )
+            routes = write_json(
+                temporary / "routes.json",
+                {
+                    "routes": [
+                        {"pattern": pattern, "script": worker_name}
+                        for pattern, worker_name in (
+                            ("getseasons.app/provider-actions", PRODUCTION_WORKER),
+                            ("getseasons.app/provider-actions/*", PRODUCTION_WORKER),
+                        )
+                    ]
+                },
+            )
+            worker = write_json(
+                temporary / "worker.json",
+                {"name": PRODUCTION_WORKER, "versionId": "candidate", "mode": "proxy"},
+            )
+            safe_worker = {
+                "name": PRODUCTION_WORKER,
+                "versionId": "safe-version",
+                "mode": "safe-baseline",
+            }
+            fake_npx = temporary / "npx"
+            fake_npx.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "from pathlib import Path\n"
+                f"Path({str(worker)!r}).write_text(json.dumps({safe_worker!r}))\n",
+                encoding="utf-8",
+            )
+            fake_npx.chmod(0o700)
             control = write_json(
                 temporary / "control.json",
                 {
                     "schemaVersion": 1,
-                    "sources": [{"name": "worker", "input": str(state)}],
+                    "sources": [
+                        {"name": "account", "type": "cloudflare-account", "input": str(account)},
+                        {"name": "zone", "type": "cloudflare-zone", "input": str(zone)},
+                        {"name": "routes", "type": "cloudflare-routes", "input": str(routes)},
+                        {"name": "worker", "type": "cloudflare-worker", "input": str(worker)},
+                    ],
+                    "rollbackCommand": [
+                        str(fake_npx),
+                        "--yes",
+                        "wrangler@4.129.0",
+                        "deploy",
+                        "--config",
+                        str(ROOT / "cloudflare/provider-actions/wrangler.safe-baseline.toml"),
+                        "--name",
+                        PRODUCTION_WORKER,
+                    ],
+                    "rollbackConfigSha256": hashlib.sha256(
+                        (ROOT / "cloudflare/provider-actions/wrangler.safe-baseline.toml").read_bytes()
+                    ).hexdigest(),
                 },
             )
             pin = temporary / "pin.json"
@@ -644,17 +794,17 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             output = temporary / "rollback-safe-evidence.json"
 
             result = run_tool(
-                "verify",
-                "--phase",
                 "rollback",
-                "--plan",
-                str(plan),
+                "--profile",
+                "safe-baseline",
                 "--responses",
                 str(fixture),
                 "--control-plan",
                 str(control),
-                "--control-pin",
+                "--current-pin",
                 str(pin),
+                "--readback-plan",
+                str(plan),
                 "--output",
                 str(output),
             )
@@ -662,11 +812,125 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             evidence = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(evidence["rollbackProfile"], "safe-baseline")
+            self.assertEqual(evidence["operation"], "rollback-executed")
+            self.assertEqual(evidence["controlProof"]["workerMode"], "safe-baseline")
             self.assertEqual(evidence["safeBaselineResponses"], len(action_paths))
             self.assertTrue(
                 all(item["releaseId"] is None for item in evidence["observations"])
             )
-            self.assertEqual(evidence["unrelatedPages"][0]["sha256"], hashlib.sha256(page_body.encode()).hexdigest())
+            self.assertEqual(len(evidence["unrelatedPages"]), 3)
+
+    def test_normal_rollback_restores_pinned_worker_and_runs_readback(self):
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            readback_plan, fixture, _ = minimal_readback_case(temporary)
+            account = write_json(temporary / "account.json", {"id": ACCOUNT_ID})
+            zone = write_json(
+                temporary / "zone.json",
+                {"name": "getseasons.app", "accountId": ACCOUNT_ID},
+            )
+            routes = write_json(
+                temporary / "routes.json",
+                {
+                    "routes": [
+                        {"pattern": pattern, "script": worker}
+                        for pattern, worker in (
+                            (
+                                "getseasons.app/provider-actions",
+                                PRODUCTION_WORKER,
+                            ),
+                            (
+                                "getseasons.app/provider-actions/*",
+                                PRODUCTION_WORKER,
+                            ),
+                        )
+                    ]
+                },
+            )
+            worker = write_json(
+                temporary / "worker.json",
+                {"name": PRODUCTION_WORKER, "versionId": "candidate", "mode": "proxy"},
+            )
+            predecessor = write_json(
+                temporary / "predecessor.json", {"backendRelease": "safe-release"}
+            )
+            fake_npx = temporary / "npx"
+            restored_worker = {
+                "name": PRODUCTION_WORKER,
+                "versionId": "predecessor-version",
+                "mode": "proxy",
+            }
+            fake_npx.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "from pathlib import Path\n"
+                f"Path({str(worker)!r}).write_text(json.dumps({restored_worker!r}))\n",
+                encoding="utf-8",
+            )
+            fake_npx.chmod(0o700)
+            control = write_json(
+                temporary / "control.json",
+                {
+                    "schemaVersion": 1,
+                    "sources": [
+                        {"name": "account", "type": "cloudflare-account", "input": str(account)},
+                        {"name": "zone", "type": "cloudflare-zone", "input": str(zone)},
+                        {"name": "routes", "type": "cloudflare-routes", "input": str(routes)},
+                        {"name": "worker", "type": "cloudflare-worker", "input": str(worker)},
+                        {"name": "predecessor", "type": "deployment-predecessor", "input": str(predecessor)},
+                    ],
+                    "rollbackCommand": [
+                        str(fake_npx),
+                        "--yes",
+                        "wrangler@4.129.0",
+                        "rollback",
+                        "predecessor-version",
+                        "--config",
+                        str(PRODUCTION_CONFIG),
+                        "--name",
+                        PRODUCTION_WORKER,
+                        "--yes",
+                    ],
+                    "rollbackConfigSha256": hashlib.sha256(
+                        PRODUCTION_CONFIG.read_bytes()
+                    ).hexdigest(),
+                },
+            )
+            current_pin = temporary / "current-pin.json"
+            self.assertEqual(run_tool("capture", "--plan", str(control), "--output", str(current_pin)).returncode, 0)
+            write_json(worker, restored_worker)
+            target_pin = temporary / "target-pin.json"
+            self.assertEqual(run_tool("capture", "--plan", str(control), "--output", str(target_pin)).returncode, 0)
+            write_json(
+                worker,
+                {"name": PRODUCTION_WORKER, "versionId": "candidate", "mode": "proxy"},
+            )
+            output = temporary / "rollback-evidence.json"
+
+            result = run_tool(
+                "rollback",
+                "--profile",
+                "predecessor",
+                "--control-plan",
+                str(control),
+                "--current-pin",
+                str(current_pin),
+                "--target-pin",
+                str(target_pin),
+                "--readback-plan",
+                str(readback_plan),
+                "--responses",
+                str(fixture),
+                "--output",
+                str(output),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["operation"], "rollback-executed")
+            self.assertEqual(evidence["rollbackProfile"], "predecessor")
+            self.assertEqual(evidence["controlProof"]["workerVersionId"], "predecessor-version")
+            self.assertEqual(evidence["transport"], "fixture")
 
 
 if __name__ == "__main__":
