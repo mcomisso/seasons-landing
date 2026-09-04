@@ -371,6 +371,48 @@ test("removes origin cookies while preserving verified response bytes", async ()
   );
 });
 
+test("preserves an explicitly validated index directive for a fresh guide", async () => {
+  const response = await worker.fetch(
+    new Request("https://getseasons.app/provider-actions/cancel/8/GB/"),
+    ENV,
+    {
+      fetch: async () =>
+        new Response("<main><h1>Cancel Netflix</h1></main>", {
+          status: 200,
+          headers: {
+            ...PAIR_HEADERS,
+            "X-Robots-Tag": "index",
+          },
+        }),
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-robots-tag"), "index");
+});
+
+for (const robots of ["all", "index, follow", "INDEX", ""]) {
+  test(`fails closed for invalid origin robots directive ${robots || "<empty>"}`, async () => {
+    const response = await worker.fetch(
+      new Request("https://getseasons.app/provider-actions/cancel/8/GB/"),
+      ENV,
+      {
+        fetch: async () =>
+          new Response("unsafe", {
+            status: 200,
+            headers: {
+              ...PAIR_HEADERS,
+              "X-Robots-Tag": robots,
+            },
+          }),
+      }
+    );
+
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("x-robots-tag"), "noindex");
+  });
+}
+
 test("replaces permissive origin security headers with the public safe policy", async () => {
   const response = await worker.fetch(
     new Request("https://getseasons.app/provider-actions/cancel/8/GB/"),

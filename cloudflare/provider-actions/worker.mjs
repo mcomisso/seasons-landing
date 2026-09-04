@@ -3,6 +3,7 @@ const BACKEND_ORIGIN = "https://api.getseasons.app";
 const STAGING_HOST =
   /^seasons-provider-actions-router-staging\.[a-z0-9-]+\.workers\.dev$/;
 const SAFE_ORIGIN_STATUSES = new Set([200, 302, 400, 404]);
+const SAFE_ROBOTS_DIRECTIVES = new Set(["index", "noindex"]);
 const RELEASE_HEADER = "X-Seasons-Provider-Actions-Release";
 const REGION_HEADER = "X-Seasons-Provider-Actions-Region";
 const PROVIDER_HEADER = "X-Seasons-Provider-Actions-Provider";
@@ -106,6 +107,7 @@ function hasSafeOriginResponse(response, pathname) {
     response.headers.get("content-type") !==
       expectedContentType(pathname, response.status) ||
     REQUIRED_ORIGIN_HEADERS.some((name) => !response.headers.has(name)) ||
+    !SAFE_ROBOTS_DIRECTIVES.has(response.headers.get("x-robots-tag")) ||
     !response.headers.get(RELEASE_HEADER) ||
     (response.status === 302 && !response.headers.get("Location"))
   ) {
@@ -131,6 +133,7 @@ function publicResponse(response, pathname) {
     }
   }
   headers.set("Content-Type", expectedContentType(pathname, response.status));
+  headers.set("X-Robots-Tag", response.headers.get("X-Robots-Tag"));
   if (response.status === 302) {
     headers.set("Location", response.headers.get("Location"));
   }
