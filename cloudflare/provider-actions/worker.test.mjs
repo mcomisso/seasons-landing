@@ -295,6 +295,24 @@ test("preserves the canonical XML media type for the Provider Actions sitemap", 
   assert.equal(await response.text(), "<urlset/>");
 });
 
+test("preserves the backend HTML 400 for a queried sitemap", async () => {
+  const response = await worker.fetch(
+    new Request("https://getseasons.app/provider-actions/sitemap.xml?invalid=1"),
+    ENV,
+    {
+      fetch: async () =>
+        new Response("<main>Invalid sitemap request</main>", {
+          status: 400,
+          headers: ORIGIN_HEADERS,
+        }),
+    }
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.equal(await response.text(), "<main>Invalid sitemap request</main>");
+});
+
 test("Cloudflare configs capture only the Provider Actions route family", async () => {
   for (const [name, expectedMode] of [
     ["wrangler.toml", "proxy"],

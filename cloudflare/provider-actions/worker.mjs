@@ -80,8 +80,8 @@ function isProviderActionsRequest(url) {
   );
 }
 
-function expectedContentType(pathname) {
-  return pathname === "/provider-actions/sitemap.xml"
+function expectedContentType(pathname, status) {
+  return pathname === "/provider-actions/sitemap.xml" && status === 200
     ? "application/xml; charset=utf-8"
     : "text/html; charset=utf-8";
 }
@@ -90,7 +90,8 @@ function hasSafeOriginResponse(response, pathname) {
   return (
     SAFE_ORIGIN_STATUSES.has(response.status) &&
     response.headers.get("cache-control") === "no-store" &&
-    response.headers.get("content-type") === expectedContentType(pathname) &&
+    response.headers.get("content-type") ===
+      expectedContentType(pathname, response.status) &&
     REQUIRED_ORIGIN_HEADERS.every((name) => response.headers.has(name))
   );
 }
@@ -102,7 +103,7 @@ function publicResponse(response, pathname) {
       headers.set(name, value);
     }
   }
-  headers.set("Content-Type", expectedContentType(pathname));
+  headers.set("Content-Type", expectedContentType(pathname, response.status));
   headers.delete("Set-Cookie");
   return new Response(response.body, {
     status: response.status,
