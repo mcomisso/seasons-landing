@@ -39,6 +39,14 @@ def write_json(path: Path, value: object) -> Path:
     return path
 
 
+def sealed_evidence(value: dict[str, object]) -> dict[str, object]:
+    result = dict(value)
+    result["evidenceSha256"] = hashlib.sha256(
+        json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+    return result
+
+
 def response(status: int, *, release: str | None = None, region: str | None = None,
              provider: int | None = None, body: str = "", location: str | None = None,
              content_type: str = "text/html; charset=utf-8", robots: str = "noindex"):
@@ -184,8 +192,47 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             value = ROLLOUT.cloudflare_api_get(
                 "/worker", "DO NOT COPY", allow_not_found=True
             )
+        missing.close()
 
-        self.assertEqual(value, {"success": True, "result": None})
+        self.assertIs(value, ROLLOUT.CLOUDFLARE_NOT_FOUND)
+
+    def test_cloudflare_worker_rejects_empty_split_and_malformed_deployments(self):
+        identity = {
+            "account": {"result": {"id": ACCOUNT_ID}},
+            "zone": {
+                "result": [
+                    {
+                        "id": "zone-id",
+                        "name": "getseasons.app",
+                        "account": {"id": ACCOUNT_ID},
+                    }
+                ]
+            },
+            "settings": {"result": {"bindings": []}},
+        }
+        invalid = (
+            {"result": {"deployments": []}},
+            {
+                "result": {
+                    "deployments": [
+                        {
+                            "versions": [
+                                {"version_id": "one", "percentage": 50},
+                                {"version_id": "two", "percentage": 50},
+                            ]
+                        }
+                    ]
+                }
+            },
+            {"result": {"deployments": [{"versions": "broken"}]}},
+        )
+
+        for deployments in invalid:
+            with self.subTest(deployments=deployments):
+                with self.assertRaises(ROLLOUT.RolloutError):
+                    ROLLOUT.normalize_cloudflare_state(
+                        "worker", {**identity, "deployments": deployments}
+                    )
 
     def test_cloudflare_state_normalizes_api_responses_without_secrets(self):
         with TemporaryDirectory() as directory:
@@ -297,6 +344,16 @@ class ProviderActionsRolloutTests(unittest.TestCase):
     def test_activate_proves_typed_identity_and_expected_worker_transition(self):
         with TemporaryDirectory() as directory:
             temporary = Path(directory)
+            predecessor_sha = "3" * 64
+            target_sha = "2" * 64
+            seal_sha = "1" * 64
+            image = f"sha256:{'4' * 64}"
+            deployed_sha = "5" * 40
+            pages_sha = "6" * 40
+            page_hashes = {
+                f"https://getseasons.app{path}": str(index) * 64
+                for index, path in enumerate(REPRESENTATIVE_PATHS, start=7)
+            }
             account = write_json(temporary / "account.json", {"id": ACCOUNT_ID})
             zone = write_json(
                 temporary / "zone.json",
@@ -308,9 +365,13 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             )
             worker = write_json(
                 temporary / "worker.json",
-                {"name": PRODUCTION_WORKER, "versionId": None},
+                {"name": PRODUCTION_WORKER, "versionId": None, "mode": None},
             )
-            after_worker = {"name": PRODUCTION_WORKER, "versionId": "after"}
+            after_worker = {
+                "name": PRODUCTION_WORKER,
+                "versionId": "after",
+                "mode": "proxy",
+            }
             after_routes = {
                 "routes": [
                     {
@@ -323,20 +384,86 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                     },
                 ]
             }
+            staging = write_json(
+                temporary / "staging.json",
+                sealed_evidence({
+                    "kind": "provider-actions-readback",
+                    "transport": "live",
+                    "phase": "staging",
+                    "canonicalOrigin": "https://seasons-provider-actions-router-staging.teomatteo89.workers.dev",
+                    "releaseId": "release-7",
+                    "releaseSealSha256": seal_sha,
+                }),
+            )
+            backend = write_json(
+                temporary / "backend.json",
+                {
+                    "app": "seasons-backend",
+                    "activeReleaseId": "safe-release",
+                    "artifactSha256": predecessor_sha,
+                },
+            )
+            fly_state = write_json(
+                temporary / "fly.json",
+                {
+                    "app": "seasons-backend",
+                    "imageDigest": image,
+                    "deployedSha": deployed_sha,
+                },
+            )
+            pages = write_json(
+                temporary / "pages.json",
+                {
+                    "deploymentSha": pages_sha,
+                    "pageHashes": page_hashes,
+                },
+            )
             predecessor = write_json(
                 temporary / "predecessor.json",
-                {"backendRelease": "safe", "flyImage": "sha256:old"},
+                {
+                    "workerVersionId": None,
+                    "backendReleaseId": "safe-release",
+                    "backendArtifactSha256": predecessor_sha,
+                    "flyImageDigest": image,
+                    "flyDeployedSha": deployed_sha,
+                    "pagesDeploymentSha": pages_sha,
+                    "pageHashes": page_hashes,
+                    "compatibleTargetReleaseId": "release-7",
+                },
             )
+            order = temporary / "order"
             fake_npx = temporary / "npx"
             fake_npx.write_text(
                 "#!/usr/bin/env python3\n"
                 "import json\n"
                 "from pathlib import Path\n"
                 f"Path({str(worker)!r}).write_text(json.dumps({after_worker!r}))\n"
-                f"Path({str(routes)!r}).write_text(json.dumps({after_routes!r}))\n",
+                f"Path({str(routes)!r}).write_text(json.dumps({after_routes!r}))\n"
+                f"Path({str(order)!r}).write_text('worker\\n')\n",
                 encoding="utf-8",
             )
             fake_npx.chmod(0o700)
+            operator = (
+                "python scripts/provider_action_release.py activate "
+                f"--expected-release-id safe-release --expected-sha256 {predecessor_sha} "
+                f"--target-release-id release-7 --target-sha256 {target_sha}"
+            )
+            after_backend = {
+                "app": "seasons-backend",
+                "activeReleaseId": "release-7",
+                "artifactSha256": target_sha,
+            }
+            fake_fly = temporary / "fly"
+            fake_fly.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "from pathlib import Path\n"
+                f"Path({str(backend)!r}).write_text(json.dumps({after_backend!r}))\n"
+                f"path = Path({str(order)!r})\n"
+                "path.write_text(path.read_text() + 'backend\\n')\n",
+                encoding="utf-8",
+            )
+            fake_fly.chmod(0o700)
             config_sha = hashlib.sha256(PRODUCTION_CONFIG.read_bytes()).hexdigest()
             plan = write_json(
                 temporary / "control.json",
@@ -368,6 +495,10 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                             "type": "deployment-predecessor",
                             "input": str(predecessor),
                         },
+                        {"name": "staging", "type": "staging-readback", "input": str(staging)},
+                        {"name": "backend", "type": "backend-release", "input": str(backend)},
+                        {"name": "fly", "type": "fly-deployment", "input": str(fly_state)},
+                        {"name": "pages", "type": "pages-deployment", "input": str(pages)},
                     ],
                     "productionConfigSha256": config_sha,
                     "activationCommand": [
@@ -380,8 +511,23 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                         "--name",
                         PRODUCTION_WORKER,
                     ],
-                    "expectedTransition": {
-                        "source": "worker",
+                    "backendActivationCommand": [
+                        str(fake_fly),
+                        "ssh",
+                        "console",
+                        "-a",
+                        "seasons-backend",
+                        "-C",
+                        operator,
+                    ],
+                    "activationTarget": {
+                        "releaseId": "release-7",
+                        "releaseSealSha256": seal_sha,
+                        "artifactSha256": target_sha,
+                        "flyImageDigest": image,
+                        "flyDeployedSha": deployed_sha,
+                        "pagesDeploymentSha": pages_sha,
+                        "pageHashes": page_hashes,
                     },
                 },
             )
@@ -405,10 +551,8 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             evidence = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(evidence["status"], "verified")
-            self.assertEqual(evidence["transitionSource"], "worker")
-            self.assertNotEqual(
-                evidence["beforeSha256"], evidence["afterSha256"]
-            )
+            self.assertEqual(evidence["releaseId"], "release-7")
+            self.assertEqual(order.read_text(), "worker\nbackend\n")
 
     def test_verify_exhaustive_matrix_and_emit_hashed_evidence(self):
         with TemporaryDirectory() as directory:
@@ -823,7 +967,14 @@ class ProviderActionsRolloutTests(unittest.TestCase):
     def test_normal_rollback_restores_pinned_worker_and_runs_readback(self):
         with TemporaryDirectory() as directory:
             temporary = Path(directory)
-            readback_plan, fixture, _ = minimal_readback_case(temporary)
+            readback_plan, _, _ = minimal_readback_case(temporary)
+            candidate_sha, predecessor_sha = "1" * 64, "2" * 64
+            seal_sha = "3" * 64
+            image, deployed_sha, pages_sha = f"sha256:{'4' * 64}", "5" * 40, "6" * 40
+            page_hashes = {
+                f"https://getseasons.app{path}": str(index) * 64
+                for index, path in enumerate(REPRESENTATIVE_PATHS, start=7)
+            }
             account = write_json(temporary / "account.json", {"id": ACCOUNT_ID})
             zone = write_json(
                 temporary / "zone.json",
@@ -851,9 +1002,14 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                 temporary / "worker.json",
                 {"name": PRODUCTION_WORKER, "versionId": "candidate", "mode": "proxy"},
             )
+            backend = write_json(temporary / "backend.json", {"app": "seasons-backend", "activeReleaseId": "release-7", "artifactSha256": candidate_sha})
+            staging = write_json(temporary / "staging.json", sealed_evidence({"kind": "provider-actions-readback", "transport": "live", "phase": "staging", "canonicalOrigin": "https://seasons-provider-actions-router-staging.teomatteo89.workers.dev", "releaseId": "release-7", "releaseSealSha256": seal_sha}))
+            fly_state = write_json(temporary / "fly.json", {"app": "seasons-backend", "imageDigest": image, "deployedSha": deployed_sha})
+            pages = write_json(temporary / "pages.json", {"deploymentSha": pages_sha, "pageHashes": page_hashes})
             predecessor = write_json(
-                temporary / "predecessor.json", {"backendRelease": "safe-release"}
+                temporary / "predecessor.json", {"workerVersionId": "predecessor-version", "backendReleaseId": "safe-release", "backendArtifactSha256": predecessor_sha, "flyImageDigest": image, "flyDeployedSha": deployed_sha, "pagesDeploymentSha": pages_sha, "pageHashes": page_hashes, "compatibleTargetReleaseId": "release-7"}
             )
+            order = temporary / "order"
             fake_npx = temporary / "npx"
             restored_worker = {
                 "name": PRODUCTION_WORKER,
@@ -864,10 +1020,17 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                 "#!/usr/bin/env python3\n"
                 "import json\n"
                 "from pathlib import Path\n"
-                f"Path({str(worker)!r}).write_text(json.dumps({restored_worker!r}))\n",
+                f"Path({str(worker)!r}).write_text(json.dumps({restored_worker!r}))\n"
+                f"path = Path({str(order)!r})\n"
+                "path.write_text(path.read_text() + 'worker\\n')\n",
                 encoding="utf-8",
             )
             fake_npx.chmod(0o700)
+            restored_backend = {"app": "seasons-backend", "activeReleaseId": "safe-release", "artifactSha256": predecessor_sha}
+            fake_fly = temporary / "fly"
+            fake_fly.write_text("#!/usr/bin/env python3\nimport json\nfrom pathlib import Path\n" f"Path({str(backend)!r}).write_text(json.dumps({restored_backend!r}))\n" f"Path({str(order)!r}).write_text('backend\\n')\n", encoding="utf-8")
+            fake_fly.chmod(0o700)
+            backend_operator = "python scripts/provider_action_release.py rollback " f"--expected-release-id release-7 --expected-sha256 {candidate_sha} " f"--target-release-id safe-release --target-sha256 {predecessor_sha}"
             control = write_json(
                 temporary / "control.json",
                 {
@@ -878,6 +1041,10 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                         {"name": "routes", "type": "cloudflare-routes", "input": str(routes)},
                         {"name": "worker", "type": "cloudflare-worker", "input": str(worker)},
                         {"name": "predecessor", "type": "deployment-predecessor", "input": str(predecessor)},
+                        {"name": "staging", "type": "staging-readback", "input": str(staging)},
+                        {"name": "backend", "type": "backend-release", "input": str(backend)},
+                        {"name": "fly", "type": "fly-deployment", "input": str(fly_state)},
+                        {"name": "pages", "type": "pages-deployment", "input": str(pages)},
                     ],
                     "rollbackCommand": [
                         str(fake_npx),
@@ -894,43 +1061,46 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                     "rollbackConfigSha256": hashlib.sha256(
                         PRODUCTION_CONFIG.read_bytes()
                     ).hexdigest(),
+                    "backendRollbackCommand": [str(fake_fly), "ssh", "console", "-a", "seasons-backend", "-C", backend_operator],
+                    "activationTarget": {"releaseId": "release-7", "releaseSealSha256": seal_sha, "artifactSha256": candidate_sha, "flyImageDigest": image, "flyDeployedSha": deployed_sha, "pagesDeploymentSha": pages_sha, "pageHashes": page_hashes},
+                    "rollbackTarget": {"releaseId": "safe-release", "artifactSha256": predecessor_sha, "workerVersionId": "predecessor-version", "workerMode": "proxy"},
                 },
             )
             current_pin = temporary / "current-pin.json"
             self.assertEqual(run_tool("capture", "--plan", str(control), "--output", str(current_pin)).returncode, 0)
             write_json(worker, restored_worker)
+            write_json(backend, restored_backend)
             target_pin = temporary / "target-pin.json"
             self.assertEqual(run_tool("capture", "--plan", str(control), "--output", str(target_pin)).returncode, 0)
             write_json(
                 worker,
                 {"name": PRODUCTION_WORKER, "versionId": "candidate", "mode": "proxy"},
             )
+            write_json(backend, {"app": "seasons-backend", "activeReleaseId": "release-7", "artifactSha256": candidate_sha})
             output = temporary / "rollback-evidence.json"
+            def live_verify(_phase, _plan, responses, evidence_path, *_args):
+                self.assertIsNone(responses)
+                write_json(evidence_path, {"schemaVersion": 1, "kind": "provider-actions-readback", "transport": "live", "phase": "rollback"})
 
-            result = run_tool(
-                "rollback",
-                "--profile",
-                "predecessor",
-                "--control-plan",
-                str(control),
-                "--current-pin",
-                str(current_pin),
-                "--target-pin",
-                str(target_pin),
-                "--readback-plan",
-                str(readback_plan),
-                "--responses",
-                str(fixture),
-                "--output",
-                str(output),
-            )
+            authorized_pin = json.loads(target_pin.read_text(encoding="utf-8"))
+            unauthorized_pin = json.loads(target_pin.read_text(encoding="utf-8"))
+            unauthorized_pin["sources"][0]["sha256"] = "0" * 64
+            write_json(target_pin, unauthorized_pin)
+            with self.assertRaises(ROLLOUT.RolloutError), patch.object(
+                ROLLOUT, "verify", side_effect=live_verify
+            ):
+                ROLLOUT.rollback("predecessor", control, current_pin, target_pin, readback_plan, None, output, 16, 20.0)
+            self.assertFalse(order.exists())
+            write_json(target_pin, authorized_pin)
+            with patch.object(ROLLOUT, "verify", side_effect=live_verify):
+                ROLLOUT.rollback("predecessor", control, current_pin, target_pin, readback_plan, None, output, 16, 20.0)
 
-            self.assertEqual(result.returncode, 0, result.stderr)
             evidence = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(evidence["operation"], "rollback-executed")
             self.assertEqual(evidence["rollbackProfile"], "predecessor")
             self.assertEqual(evidence["controlProof"]["workerVersionId"], "predecessor-version")
-            self.assertEqual(evidence["transport"], "fixture")
+            self.assertEqual(evidence["transport"], "live")
+            self.assertEqual(order.read_text(), "backend\nworker\n")
 
 
 if __name__ == "__main__":

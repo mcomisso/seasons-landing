@@ -69,6 +69,7 @@ REPRESENTATIVE_PAGES = {
     "https://getseasons.app/terms.html",
 }
 CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
+CLOUDFLARE_NOT_FOUND = object()
 
 
 def canonical_json(value: object) -> bytes:
@@ -138,7 +139,7 @@ def cloudflare_api_get(
             payload = json.loads(response.read(4_194_305))
     except urllib.error.HTTPError as error:
         if allow_not_found and error.code == 404:
-            return {"success": True, "result": None}
+            return CLOUDFLARE_NOT_FOUND
         raise RolloutError("Cloudflare control-plane read failed") from error
     except (OSError, UnicodeError, urllib.error.URLError, json.JSONDecodeError) as error:
         raise RolloutError("Cloudflare control-plane read failed") from error
@@ -186,28 +187,39 @@ def normalize_cloudflare_state(kind: str, payloads: dict[str, object]) -> object
             )
         }
     deployments_payload = payloads.get("deployments")
+    settings_payload = payloads.get("settings")
+    if deployments_payload is CLOUDFLARE_NOT_FOUND:
+        if settings_payload is not CLOUDFLARE_NOT_FOUND:
+            raise RolloutError("Cloudflare Worker absence was inconsistent")
+        return {"name": PRODUCTION_WORKER, "versionId": None, "mode": None}
+    if settings_payload is CLOUDFLARE_NOT_FOUND:
+        raise RolloutError("Cloudflare Worker topology was inconsistent")
     result = (
         deployments_payload.get("result")
         if isinstance(deployments_payload, dict)
         else None
     )
     deployments = result.get("deployments") if isinstance(result, dict) else None
+    if (
+        not isinstance(deployments, list)
+        or not deployments
+        or not isinstance(deployments[0], dict)
+    ):
+        raise RolloutError("Cloudflare Worker deployment topology is invalid")
     versions = (
         deployments[0].get("versions")
-        if isinstance(deployments, list)
-        and deployments
-        and isinstance(deployments[0], dict)
+        if isinstance(deployments[0].get("versions"), list)
         else []
     )
-    active = [
-        item
-        for item in versions
-        if isinstance(item, dict) and item.get("percentage") == 100
-    ]
-    if len(active) > 1:
+    if (
+        len(versions) != 1
+        or not isinstance(versions[0], dict)
+        or versions[0].get("percentage") != 100
+        or not isinstance(versions[0].get("version_id"), str)
+        or not versions[0]["version_id"]
+    ):
         raise RolloutError("Cloudflare Worker deployment is not singular")
-    version_id = active[0].get("version_id") if active else None
-    settings_payload = payloads.get("settings")
+    version_id = versions[0]["version_id"]
     settings = settings_payload.get("result") if isinstance(settings_payload, dict) else None
     bindings = settings.get("bindings") if isinstance(settings, dict) else []
     mode = next(
@@ -444,6 +456,187 @@ def validate_activation_sources(
         raise RolloutError("Cloudflare production Worker identity is invalid")
 
 
+def typed_control_values(
+    sources: list[dict[str, object]], values: dict[str, object]
+) -> dict[str, tuple[str, object]]:
+    result: dict[str, tuple[str, object]] = {}
+    for source in sources:
+        source_type = source.get("type")
+        name = str(source["name"])
+        if not isinstance(source_type, str) or source_type in result:
+            raise RolloutError("control source types are invalid")
+        result[source_type] = (name, values[name])
+    return result
+
+
+def require_sha256(value: object, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise RolloutError(f"{field} must be a lowercase SHA-256")
+    return value
+
+
+def require_revision(value: object, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) not in {40, 64}
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise RolloutError(f"{field} must be a fixed revision SHA")
+    return value
+
+
+def validate_release_authorization(
+    plan: dict[str, object],
+    sources: list[dict[str, object]],
+    values: dict[str, object],
+    *,
+    phase: str,
+) -> tuple[dict[str, object], dict[str, tuple[str, object]]]:
+    by_type = typed_control_values(sources, values)
+    required = {
+        "staging-readback",
+        "backend-release",
+        "fly-deployment",
+        "pages-deployment",
+        "deployment-predecessor",
+    }
+    if not required.issubset(by_type):
+        raise RolloutError("release operation needs all typed authorization sources")
+    target = plan.get("activationTarget")
+    expected_target_fields = {
+        "releaseId",
+        "releaseSealSha256",
+        "artifactSha256",
+        "flyImageDigest",
+        "flyDeployedSha",
+        "pagesDeploymentSha",
+        "pageHashes",
+    }
+    if not isinstance(target, dict) or set(target) != expected_target_fields:
+        raise RolloutError("control plan needs an exact activation target")
+    release_id = target.get("releaseId")
+    if not isinstance(release_id, str) or not release_id:
+        raise RolloutError("activation target release ID is invalid")
+    seal = require_sha256(target.get("releaseSealSha256"), "release seal")
+    artifact = require_sha256(target.get("artifactSha256"), "release artifact")
+    staging = by_type["staging-readback"][1]
+    if (
+        not isinstance(staging, dict)
+        or staging.get("kind") != "provider-actions-readback"
+        or staging.get("transport") != "live"
+        or staging.get("phase") != "staging"
+        or staging.get("canonicalOrigin") != STAGING_ORIGIN
+        or staging.get("releaseId") != release_id
+        or staging.get("releaseSealSha256") != seal
+    ):
+        raise RolloutError("live staging readback did not authorize the release")
+    staging_evidence_sha = require_sha256(
+        staging.get("evidenceSha256"), "staging evidence"
+    )
+    unsealed_staging = {
+        key: value for key, value in staging.items() if key != "evidenceSha256"
+    }
+    if hashlib.sha256(canonical_json(unsealed_staging)).hexdigest() != staging_evidence_sha:
+        raise RolloutError("live staging readback evidence seal did not match")
+    image = target.get("flyImageDigest")
+    deployed_sha = target.get("flyDeployedSha")
+    if not isinstance(image, str) or not image.startswith("sha256:"):
+        raise RolloutError("Fly deployment authorization is invalid")
+    require_sha256(image.removeprefix("sha256:"), "Fly image")
+    require_revision(deployed_sha, "Fly deployed SHA")
+    pages_sha = target.get("pagesDeploymentSha")
+    require_revision(pages_sha, "Pages deployment SHA")
+    page_hashes = target.get("pageHashes")
+    if (
+        not isinstance(page_hashes, dict)
+        or set(page_hashes) != REPRESENTATIVE_PAGES
+    ):
+        raise RolloutError("fixed pre-change Pages hashes are invalid")
+    for value in page_hashes.values():
+        require_sha256(value, "Pages hash")
+    fly = by_type["fly-deployment"][1]
+    if not isinstance(fly, dict) or fly != {
+        "app": "seasons-backend",
+        "imageDigest": image,
+        "deployedSha": deployed_sha,
+    }:
+        raise RolloutError("Fly deployment did not match the authorized backend")
+    pages = by_type["pages-deployment"][1]
+    if not isinstance(pages, dict) or pages != {
+        "deploymentSha": pages_sha,
+        "pageHashes": page_hashes,
+    }:
+        raise RolloutError("Pages deployment did not match the authorization")
+    predecessor = by_type["deployment-predecessor"][1]
+    if not isinstance(predecessor, dict):
+        raise RolloutError("deployment predecessor is invalid")
+    backend = by_type["backend-release"][1]
+    expected_backend = (
+        {
+            "app": "seasons-backend",
+            "activeReleaseId": release_id,
+            "artifactSha256": artifact,
+        }
+        if phase == "final"
+        else {
+            "app": "seasons-backend",
+            "activeReleaseId": predecessor.get("backendReleaseId"),
+            "artifactSha256": predecessor.get("backendArtifactSha256"),
+        }
+    )
+    if backend != expected_backend:
+        raise RolloutError("backend active release did not match the authorized state")
+    if (
+        predecessor.get("compatibleTargetReleaseId") != release_id
+        or predecessor.get("flyImageDigest") != image
+        or predecessor.get("flyDeployedSha") != deployed_sha
+        or predecessor.get("pagesDeploymentSha") != pages_sha
+        or predecessor.get("pageHashes") != page_hashes
+    ):
+        raise RolloutError("Worker and backend predecessor are not a compatible set")
+    worker = by_type["cloudflare-worker"][1]
+    if phase == "before" and isinstance(worker, dict):
+        if (
+            worker.get("versionId") != predecessor.get("workerVersionId")
+            or (worker.get("versionId") is not None and worker.get("mode") != "safe-baseline")
+        ):
+            raise RolloutError("production Worker is not at the authorized safe predecessor")
+    return target, by_type
+
+
+def validate_backend_operator(
+    plan: dict[str, object],
+    operation: str,
+    expected_release_id: object,
+    expected_sha256: object,
+    target_release_id: object,
+    target_sha256: object,
+) -> list[str]:
+    key = "backendActivationCommand" if operation == "activate" else "backendRollbackCommand"
+    command = plan.get(key)
+    expected = (
+        f"python scripts/provider_action_release.py {operation} "
+        f"--expected-release-id {expected_release_id} "
+        f"--expected-sha256 {expected_sha256} "
+        f"--target-release-id {target_release_id} "
+        f"--target-sha256 {target_sha256}"
+    )
+    if (
+        not isinstance(command, list)
+        or len(command) != 7
+        or not all(isinstance(item, str) and item for item in command)
+        or Path(command[0]).name != "fly"
+        or command[1:6] != ["ssh", "console", "-a", "seasons-backend", "-C"]
+        or command[6] != expected
+    ):
+        raise RolloutError(f"backend {operation} command is invalid")
+    return command
+
+
 def validate_activation_command(plan: dict[str, object]) -> list[str]:
     command = plan.get("activationCommand")
     if (
@@ -530,20 +723,22 @@ def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
     plan, sources = load_control_plan(plan_path)
     pin, observed, before_values = compare_control_pin(plan_path, pin_path)
     validate_activation_sources(sources, before_values, after_activation=False)
-    command = validate_activation_command(plan)
-    transition = plan.get("expectedTransition")
-    if (
-        not isinstance(transition, dict)
-        or not isinstance(transition.get("source"), str)
-        or set(transition) != {"source"}
-    ):
-        raise RolloutError("control plan needs an expected transition")
-    transition_source = transition["source"]
-    source_types = {str(source["name"]): source.get("type") for source in sources}
-    if source_types.get(transition_source) != "cloudflare-worker":
-        raise RolloutError("expected transition must target the production Worker")
+    target, before_types = validate_release_authorization(
+        plan, sources, before_values, phase="before"
+    )
+    worker_command = validate_activation_command(plan)
+    predecessor = before_types["deployment-predecessor"][1]
+    assert isinstance(predecessor, dict)
+    backend_command = validate_backend_operator(
+        plan,
+        "activate",
+        predecessor.get("backendReleaseId"),
+        predecessor.get("backendArtifactSha256"),
+        target["releaseId"],
+        target["artifactSha256"],
+    )
     completed = subprocess.run(
-        command,
+        worker_command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -551,40 +746,74 @@ def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
         timeout=300,
     )
     if completed.returncode != 0:
-        raise RolloutError(f"activation failed with exit {completed.returncode}")
-    after, after_values = control_snapshot(sources, plan_path.resolve().parent)
-    validate_activation_sources(sources, after_values, after_activation=True)
+        raise RolloutError(f"Worker activation failed with exit {completed.returncode}")
+    worker_after, worker_after_values = control_snapshot(
+        sources, plan_path.resolve().parent
+    )
+    validate_activation_sources(sources, worker_after_values, after_activation=True)
+    validate_release_authorization(
+        plan, sources, worker_after_values, phase="worker"
+    )
     before_by_name = {item["name"]: item["sha256"] for item in observed}
-    after_by_name = {item["name"]: item["sha256"] for item in after}
+    worker_after_by_name = {item["name"]: item["sha256"] for item in worker_after}
+    transition_source = before_types["cloudflare-worker"][0]
     route_source = next(
         str(source["name"])
         for source in sources
         if source.get("type") == "cloudflare-routes"
     )
     if any(
-        after_by_name[name] != digest
+        worker_after_by_name[name] != digest
         for name, digest in before_by_name.items()
         if name not in {transition_source, route_source}
     ):
         raise RolloutError("non-target control-plane state changed during activation")
     before_worker = before_values[transition_source]
-    after_worker = after_values[transition_source]
+    after_worker = worker_after_values[transition_source]
     assert isinstance(before_worker, dict) and isinstance(after_worker, dict)
     if after_worker["versionId"] == before_worker.get("versionId"):
         raise RolloutError("production Worker did not reach the expected state")
+    completed = subprocess.run(
+        backend_command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=300,
+    )
+    if completed.returncode != 0:
+        raise RolloutError(f"backend activation failed with exit {completed.returncode}")
+    after, after_values = control_snapshot(sources, plan_path.resolve().parent)
+    validate_activation_sources(sources, after_values, after_activation=True)
+    after_target, final_types = validate_release_authorization(
+        plan, sources, after_values, phase="final"
+    )
+    after_by_name = {item["name"]: item["sha256"] for item in after}
+    backend_source = final_types["backend-release"][0]
+    if any(
+        after_by_name[name] != digest
+        for name, digest in worker_after_by_name.items()
+        if name != backend_source
+    ):
+        raise RolloutError("non-backend state changed during backend activation")
     write_evidence(
         output,
         {
             "schemaVersion": 1,
             "kind": "provider-actions-activation",
             "pinSha256": hashlib.sha256(canonical_json(pin)).hexdigest(),
-            "activationCommandSha256": hashlib.sha256(
-                canonical_json(command)
+            "workerActivationCommandSha256": hashlib.sha256(
+                canonical_json(worker_command)
+            ).hexdigest(),
+            "backendActivationCommandSha256": hashlib.sha256(
+                canonical_json(backend_command)
             ).hexdigest(),
             "sources": after,
-            "transitionSource": transition_source,
-            "beforeSha256": before_by_name[transition_source],
-            "afterSha256": after_by_name[transition_source],
+            "releaseId": after_target["releaseId"],
+            "releaseSealSha256": after_target["releaseSealSha256"],
+            "workerBeforeSha256": before_by_name[transition_source],
+            "workerAfterSha256": after_by_name[transition_source],
+            "backendAfterSha256": after_by_name[backend_source],
             "status": "verified",
         },
     )
@@ -595,15 +824,26 @@ def control_proof(
 ) -> dict[str, object]:
     by_type = {source.get("type"): values[str(source["name"])] for source in sources}
     worker = by_type["cloudflare-worker"]
+    routes = by_type["cloudflare-routes"]
     assert isinstance(worker, dict)
-    return {
+    assert isinstance(routes, dict)
+    proof = {
         "accountId": SEASONS_ACCOUNT_ID,
         "zone": SEASONS_ZONE,
-        "routes": sorted(pattern for pattern, _ in PRODUCTION_ROUTES),
+        "routes": sorted(
+            routes["routes"], key=lambda item: (item["pattern"], item["script"])
+        ),
         "worker": PRODUCTION_WORKER,
         "workerVersionId": worker["versionId"],
         "workerMode": worker.get("mode"),
     }
+    backend = by_type.get("backend-release")
+    if backend is not None:
+        backend_value = backend
+        assert isinstance(backend_value, dict)
+        proof["backendReleaseId"] = backend_value.get("activeReleaseId")
+        proof["backendArtifactSha256"] = backend_value.get("artifactSha256")
+    return proof
 
 
 def rollback(
@@ -627,38 +867,138 @@ def rollback(
         raise RolloutError("normal rollback needs a target pin")
     if profile == "safe-baseline" and target_pin_path is not None:
         raise RolloutError("safe-baseline rollback does not accept a target pin")
-    completed = subprocess.run(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=300,
-    )
-    if completed.returncode != 0:
-        raise RolloutError(f"rollback failed with exit {completed.returncode}")
-    after, after_values = control_snapshot(
-        sources, control_plan_path.resolve().parent
-    )
-    validate_activation_sources(sources, after_values, after_activation=True)
     worker_source = next(
         str(source["name"])
         for source in sources
         if source.get("type") == "cloudflare-worker"
     )
     before_by_name = {item["name"]: item["sha256"] for item in before}
-    after_by_name = {item["name"]: item["sha256"] for item in after}
     if profile == "predecessor":
         assert target_pin_path is not None and target_version is not None
-        target_pin, _, target_values = compare_control_pin(
+        if responses_path is not None:
+            raise RolloutError("normal rollback requires live canonical readback")
+        current_target, current_types = validate_release_authorization(
+            plan, sources, before_values, phase="final"
+        )
+        rollback_target = plan.get("rollbackTarget")
+        if (
+            not isinstance(rollback_target, dict)
+            or set(rollback_target)
+            != {"releaseId", "artifactSha256", "workerVersionId", "workerMode"}
+            or rollback_target.get("workerVersionId") != target_version
+        ):
+            raise RolloutError("normal rollback target is invalid")
+        require_sha256(rollback_target.get("artifactSha256"), "rollback artifact")
+        predecessor = current_types["deployment-predecessor"][1]
+        assert isinstance(predecessor, dict)
+        if (
+            rollback_target.get("releaseId") != predecessor.get("backendReleaseId")
+            or rollback_target.get("artifactSha256")
+            != predecessor.get("backendArtifactSha256")
+            or rollback_target.get("workerVersionId")
+            != predecessor.get("workerVersionId")
+        ):
+            raise RolloutError("rollback target was not the compatible predecessor")
+        backend_command = validate_backend_operator(
+            plan,
+            "rollback",
+            current_target["releaseId"],
+            current_target["artifactSha256"],
+            rollback_target["releaseId"],
+            rollback_target["artifactSha256"],
+        )
+        target_pin = read_json(target_pin_path)
+        target_sources = target_pin.get("sources") if isinstance(target_pin, dict) else None
+        if (
+            not isinstance(target_pin, dict)
+            or target_pin.get("schemaVersion") != 1
+            or target_pin.get("kind") != "provider-actions-control-pin"
+            or not isinstance(target_sources, list)
+        ):
+            raise RolloutError("normal rollback target pin is invalid")
+        authorized_values = dict(before_values)
+        backend_source = current_types["backend-release"][0]
+        authorized_values[backend_source] = {
+            "app": "seasons-backend",
+            "activeReleaseId": rollback_target["releaseId"],
+            "artifactSha256": rollback_target["artifactSha256"],
+        }
+        authorized_values[worker_source] = {
+            "name": PRODUCTION_WORKER,
+            "versionId": rollback_target["workerVersionId"],
+            "mode": rollback_target["workerMode"],
+        }
+        expected_target = {
+            name: hashlib.sha256(canonical_json(value)).hexdigest()
+            for name, value in authorized_values.items()
+        }
+        supplied_target = {
+            item.get("name"): item.get("sha256")
+            for item in target_sources
+            if isinstance(item, dict)
+        }
+        if supplied_target != expected_target or len(target_sources) != len(expected_target):
+            raise RolloutError("normal rollback target pin was not authorized")
+        completed = subprocess.run(
+            backend_command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=300,
+        )
+        if completed.returncode != 0:
+            raise RolloutError(f"backend rollback failed with exit {completed.returncode}")
+        backend_after, backend_after_values = control_snapshot(
+            sources, control_plan_path.resolve().parent
+        )
+        backend_after_by_name = {
+            item["name"]: item["sha256"] for item in backend_after
+        }
+        if (
+            backend_after_values[backend_source] != authorized_values[backend_source]
+            or any(
+                backend_after_by_name[name] != digest
+                for name, digest in before_by_name.items()
+                if name != backend_source
+            )
+        ):
+            raise RolloutError("backend rollback transition did not match")
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=300,
+        )
+        if completed.returncode != 0:
+            raise RolloutError(f"Worker rollback failed with exit {completed.returncode}")
+        target_pin, after, after_values = compare_control_pin(
             control_plan_path, target_pin_path
         )
-        worker = target_values[worker_source]
-        if not isinstance(worker, dict) or worker.get("versionId") != target_version:
+        validate_activation_sources(sources, after_values, after_activation=True)
+        worker = after_values[worker_source]
+        if worker != authorized_values[worker_source]:
             raise RolloutError("restored Worker did not match the rollback target")
         verification_pin_path = target_pin_path
         after_pin = target_pin
     else:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=300,
+        )
+        if completed.returncode != 0:
+            raise RolloutError(f"rollback failed with exit {completed.returncode}")
+        after, after_values = control_snapshot(
+            sources, control_plan_path.resolve().parent
+        )
+        validate_activation_sources(sources, after_values, after_activation=True)
+        after_by_name = {item["name"]: item["sha256"] for item in after}
         if any(
             digest != after_by_name[name]
             for name, digest in before_by_name.items()
@@ -712,6 +1052,10 @@ def rollback(
             "controlProof": control_proof(sources, after_values),
         }
     )
+    if profile == "predecessor":
+        evidence["backendRollbackCommandSha256"] = hashlib.sha256(
+            canonical_json(backend_command)
+        ).hexdigest()
     evidence.pop("evidenceSha256", None)
     evidence["evidenceSha256"] = hashlib.sha256(canonical_json(evidence)).hexdigest()
     write_evidence(output, evidence)
@@ -1125,6 +1469,7 @@ def verify(
         ),
         "transport": "live" if responses_path is None else "fixture",
         "phase": phase,
+        "canonicalOrigin": origin,
         "releaseId": release_id,
         "releaseSealSha256": release["sealSha256"],
         "verifiedAt": plan["at"],
