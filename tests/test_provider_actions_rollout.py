@@ -242,41 +242,39 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             )
             routes = write_json(
                 temporary / "routes.json",
-                {
-                    "routes": [
-                        {
-                            "pattern": "getseasons.app/provider-actions",
-                            "script": PRODUCTION_WORKER,
-                        },
-                        {
-                            "pattern": "getseasons.app/provider-actions/*",
-                            "script": PRODUCTION_WORKER,
-                        },
-                    ]
-                },
+                {"routes": []},
             )
             worker = write_json(
                 temporary / "worker.json",
-                {"name": PRODUCTION_WORKER, "versionId": "before"},
+                {"name": PRODUCTION_WORKER, "versionId": None},
             )
             after_worker = {"name": PRODUCTION_WORKER, "versionId": "after"}
-            expected_after = hashlib.sha256(
-                json.dumps(
-                    after_worker,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                ).encode()
-            ).hexdigest()
-            fake_wrangler = temporary / "wrangler"
-            fake_wrangler.write_text(
+            after_routes = {
+                "routes": [
+                    {
+                        "pattern": "getseasons.app/provider-actions",
+                        "script": PRODUCTION_WORKER,
+                    },
+                    {
+                        "pattern": "getseasons.app/provider-actions/*",
+                        "script": PRODUCTION_WORKER,
+                    },
+                ]
+            }
+            predecessor = write_json(
+                temporary / "predecessor.json",
+                {"backendRelease": "safe", "flyImage": "sha256:old"},
+            )
+            fake_npx = temporary / "npx"
+            fake_npx.write_text(
                 "#!/usr/bin/env python3\n"
                 "import json\n"
                 "from pathlib import Path\n"
-                f"Path({str(worker)!r}).write_text(json.dumps({after_worker!r}))\n",
+                f"Path({str(worker)!r}).write_text(json.dumps({after_worker!r}))\n"
+                f"Path({str(routes)!r}).write_text(json.dumps({after_routes!r}))\n",
                 encoding="utf-8",
             )
-            fake_wrangler.chmod(0o700)
+            fake_npx.chmod(0o700)
             config_sha = hashlib.sha256(PRODUCTION_CONFIG.read_bytes()).hexdigest()
             plan = write_json(
                 temporary / "control.json",
@@ -303,10 +301,17 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                             "type": "cloudflare-worker",
                             "input": str(worker),
                         },
+                        {
+                            "name": "predecessor",
+                            "type": "deployment-predecessor",
+                            "input": str(predecessor),
+                        },
                     ],
                     "productionConfigSha256": config_sha,
                     "activationCommand": [
-                        str(fake_wrangler),
+                        str(fake_npx),
+                        "--yes",
+                        "wrangler@4.129.0",
                         "deploy",
                         "--config",
                         str(PRODUCTION_CONFIG),
@@ -315,7 +320,6 @@ class ProviderActionsRolloutTests(unittest.TestCase):
                     ],
                     "expectedTransition": {
                         "source": "worker",
-                        "afterSha256": expected_after,
                     },
                 },
             )
@@ -585,6 +589,84 @@ class ProviderActionsRolloutTests(unittest.TestCase):
             evidence = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(evidence["phase"], "rollback")
             self.assertRegex(evidence["controlPinSha256"], r"^[0-9a-f]{64}$")
+
+    def test_safe_baseline_rollback_verifies_503_family_and_unrelated_pages(self):
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            plan, fixture, _ = minimal_readback_case(temporary)
+            origin = "https://getseasons.app"
+            action_paths = [
+                "/provider-actions",
+                "/provider-actions/",
+                "/provider-actions/cancel/8/GB/",
+                "/provider-actions/start/8/GB/",
+                "/provider-actions/sitemap.xml",
+                "/provider-actions/cancel/999999/ZZ/",
+                "/provider-actions/cancel/8/gb/",
+                "/provider-actions/cancel/08/GB/",
+                "/provider-actions/cancel/8/GB/?context=invalid",
+                "/provider-actions/sitemap.xml?context=invalid",
+            ]
+            responses = {
+                f"{origin}{path}": response(
+                    503,
+                    body="Provider Actions are temporarily unavailable",
+                )
+                for path in action_paths
+            }
+            page_body = "unchanged privacy page"
+            responses[f"{origin}/privacy"] = response(200, body=page_body)
+            write_json(fixture, responses)
+            plan_value = json.loads(plan.read_text(encoding="utf-8"))
+            plan_value["rollbackProfile"] = "safe-baseline"
+            plan_value["unrelatedPages"] = [
+                {
+                    "url": f"{origin}/privacy",
+                    "sha256": hashlib.sha256(page_body.encode()).hexdigest(),
+                }
+            ]
+            write_json(plan, plan_value)
+            state = write_json(temporary / "state.json", {"mode": "safe-baseline"})
+            control = write_json(
+                temporary / "control.json",
+                {
+                    "schemaVersion": 1,
+                    "sources": [{"name": "worker", "input": str(state)}],
+                },
+            )
+            pin = temporary / "pin.json"
+            self.assertEqual(
+                run_tool(
+                    "capture", "--plan", str(control), "--output", str(pin)
+                ).returncode,
+                0,
+            )
+            output = temporary / "rollback-safe-evidence.json"
+
+            result = run_tool(
+                "verify",
+                "--phase",
+                "rollback",
+                "--plan",
+                str(plan),
+                "--responses",
+                str(fixture),
+                "--control-plan",
+                str(control),
+                "--control-pin",
+                str(pin),
+                "--output",
+                str(output),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(evidence["rollbackProfile"], "safe-baseline")
+            self.assertEqual(evidence["safeBaselineResponses"], len(action_paths))
+            self.assertTrue(
+                all(item["releaseId"] is None for item in evidence["observations"])
+            )
+            self.assertEqual(evidence["unrelatedPages"][0]["sha256"], hashlib.sha256(page_body.encode()).hexdigest())
 
 
 if __name__ == "__main__":

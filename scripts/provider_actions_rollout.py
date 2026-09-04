@@ -211,7 +211,10 @@ def compare_control_pin(
 
 
 def validate_activation_sources(
-    sources: list[dict[str, object]], values: dict[str, object]
+    sources: list[dict[str, object]],
+    values: dict[str, object],
+    *,
+    after_activation: bool,
 ) -> None:
     by_type: dict[str, tuple[str, object]] = {}
     for source in sources:
@@ -226,7 +229,7 @@ def validate_activation_sources(
         "cloudflare-routes",
         "cloudflare-worker",
     }
-    if set(by_type) != required:
+    if not required.issubset(by_type):
         raise RolloutError("activation needs the four typed Cloudflare sources")
     account = by_type["cloudflare-account"][1]
     if not isinstance(account, dict) or account.get("id") != SEASONS_ACCOUNT_ID:
@@ -243,14 +246,32 @@ def validate_activation_sources(
     if not isinstance(routes, list) or any(not isinstance(route, dict) for route in routes):
         raise RolloutError("Cloudflare routes response is invalid")
     observed_routes = {(route.get("pattern"), route.get("script")) for route in routes}
-    if observed_routes != PRODUCTION_ROUTES or len(routes) != len(PRODUCTION_ROUTES):
+    allowed_routes = {frozenset(), frozenset(PRODUCTION_ROUTES)}
+    if (
+        frozenset(observed_routes) not in allowed_routes
+        or len(routes) != len(observed_routes)
+        or (after_activation and observed_routes != PRODUCTION_ROUTES)
+    ):
         raise RolloutError("Cloudflare routes did not match the exact production pair")
     worker = by_type["cloudflare-worker"][1]
     if (
         not isinstance(worker, dict)
         or worker.get("name") != PRODUCTION_WORKER
-        or not isinstance(worker.get("versionId"), str)
-        or not worker["versionId"]
+        or (
+            after_activation
+            and (
+                not isinstance(worker.get("versionId"), str)
+                or not worker["versionId"]
+            )
+        )
+        or (
+            not after_activation
+            and worker.get("versionId") is not None
+            and (
+                not isinstance(worker.get("versionId"), str)
+                or not worker["versionId"]
+            )
+        )
     ):
         raise RolloutError("Cloudflare production Worker identity is invalid")
 
@@ -263,13 +284,12 @@ def validate_activation_command(plan: dict[str, object]) -> list[str]:
         or not all(isinstance(part, str) and part for part in command)
     ):
         raise RolloutError("control plan needs an activation command")
-    arguments = command[1:]
-    if Path(command[0]).name == "npx":
-        if not arguments or arguments[0] != "wrangler":
-            raise RolloutError("activation command must target Wrangler")
-        arguments = arguments[1:]
-    elif Path(command[0]).name != "wrangler":
-        raise RolloutError("activation command must target Wrangler")
+    if Path(command[0]).name != "npx" or command[1:3] != [
+        "--yes",
+        "wrangler@4.129.0",
+    ]:
+        raise RolloutError("activation command must use pinned Wrangler 4.129.0")
+    arguments = command[3:]
     if len(arguments) != 5 or arguments[:2] != ["deploy", "--config"]:
         raise RolloutError("activation command is not the pinned production deploy")
     if arguments[3:5] != ["--name", PRODUCTION_WORKER]:
@@ -292,14 +312,13 @@ def validate_activation_command(plan: dict[str, object]) -> list[str]:
 def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
     plan, sources = load_control_plan(plan_path)
     pin, observed, before_values = compare_control_pin(plan_path, pin_path)
-    validate_activation_sources(sources, before_values)
+    validate_activation_sources(sources, before_values, after_activation=False)
     command = validate_activation_command(plan)
     transition = plan.get("expectedTransition")
     if (
         not isinstance(transition, dict)
         or not isinstance(transition.get("source"), str)
-        or not isinstance(transition.get("afterSha256"), str)
-        or len(transition["afterSha256"]) != 64
+        or set(transition) != {"source"}
     ):
         raise RolloutError("control plan needs an expected transition")
     transition_source = transition["source"]
@@ -317,19 +336,24 @@ def activate(plan_path: Path, pin_path: Path, output: Path) -> None:
     if completed.returncode != 0:
         raise RolloutError(f"activation failed with exit {completed.returncode}")
     after, after_values = control_snapshot(sources, plan_path.resolve().parent)
-    validate_activation_sources(sources, after_values)
+    validate_activation_sources(sources, after_values, after_activation=True)
     before_by_name = {item["name"]: item["sha256"] for item in observed}
     after_by_name = {item["name"]: item["sha256"] for item in after}
+    route_source = next(
+        str(source["name"])
+        for source in sources
+        if source.get("type") == "cloudflare-routes"
+    )
     if any(
         after_by_name[name] != digest
         for name, digest in before_by_name.items()
-        if name != transition_source
+        if name not in {transition_source, route_source}
     ):
         raise RolloutError("non-target control-plane state changed during activation")
-    if (
-        after_by_name[transition_source] == before_by_name[transition_source]
-        or after_by_name[transition_source] != transition["afterSha256"]
-    ):
+    before_worker = before_values[transition_source]
+    after_worker = after_values[transition_source]
+    assert isinstance(before_worker, dict) and isinstance(after_worker, dict)
+    if after_worker["versionId"] == before_worker.get("versionId"):
         raise RolloutError("production Worker did not reach the expected state")
     write_evidence(
         output,
@@ -451,6 +475,8 @@ def observe(
     provider: int | None = None,
     expected_location: str | None = None,
     expected_content_type: str = "text/html; charset=utf-8",
+    require_safety: bool = False,
+    forbid_identity: bool = False,
 ) -> tuple[dict[str, object], bytes, dict[str, str]]:
     status, headers, body = responses.get(url)
     if status != expected_status:
@@ -461,9 +487,18 @@ def observe(
         raise RolloutError("canonical response region identity did not match")
     if provider is not None and headers.get("x-seasons-provider-actions-provider") != str(provider):
         raise RolloutError("canonical response provider identity did not match")
+    if forbid_identity and any(
+        headers.get(name) is not None
+        for name in (
+            "x-seasons-provider-actions-release",
+            "x-seasons-provider-actions-region",
+            "x-seasons-provider-actions-provider",
+        )
+    ):
+        raise RolloutError("safe baseline response exposed backend identity")
     if headers.get("content-type") != expected_content_type:
         raise RolloutError("canonical response content type did not match")
-    if release_id is not None:
+    if release_id is not None or require_safety:
         require_safe_headers(headers)
     location = headers.get("location")
     if location != expected_location:
@@ -483,6 +518,25 @@ def observe(
         body,
         headers,
     )
+
+
+def verify_unrelated_pages(
+    plan: dict[str, object], responses: Responses
+) -> list[dict[str, object]]:
+    pages = []
+    for page in plan.get("unrelatedPages", []):
+        if not isinstance(page, dict) or not isinstance(page.get("url"), str) or not isinstance(page.get("sha256"), str):
+            raise RolloutError("unrelated Pages check is invalid")
+        url = page["url"]
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or parsed.netloc != "getseasons.app" or parsed.query or parsed.fragment or parsed.path.startswith("/provider-actions"):
+            raise RolloutError("unrelated Pages URL is outside the canonical site")
+        status, _, body = responses.get(url)
+        digest = hashlib.sha256(body).hexdigest()
+        if status != 200 or digest != page["sha256"]:
+            raise RolloutError("unrelated Pages response changed")
+        pages.append({"url": url, "status": status, "sha256": digest})
+    return pages
 
 
 def verify(
@@ -552,6 +606,66 @@ def verify(
             raise RolloutError("control plan and pin must be supplied together")
         control_pin, _, _ = compare_control_pin(control_plan_path, control_pin_path)
         control_pin_sha256 = hashlib.sha256(canonical_json(control_pin)).hexdigest()
+    rollback_profile = plan.get("rollbackProfile")
+    if rollback_profile is not None and (
+        phase != "rollback" or rollback_profile != "safe-baseline"
+    ):
+        raise RolloutError("readback plan has an invalid rollback profile")
+    if rollback_profile == "safe-baseline":
+        safe_paths = [
+            "/provider-actions",
+            "/provider-actions/",
+            *(
+                path
+                for region, provider in sorted(pairs)
+                for path in (
+                    f"/provider-actions/cancel/{provider}/{region}/",
+                    f"/provider-actions/start/{provider}/{region}/",
+                )
+            ),
+            "/provider-actions/sitemap.xml",
+            *(path for path, _ in INVALID_PATHS.values()),
+        ]
+
+        def verify_safe_path(path: str) -> dict[str, object]:
+            observation, _, _ = observe(
+                responses,
+                f"{origin}{path}",
+                expected_status=503,
+                require_safety=True,
+                forbid_identity=True,
+            )
+            return observation
+
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            observations = list(executor.map(verify_safe_path, safe_paths))
+        evidence = {
+            "schemaVersion": 1,
+            "kind": (
+                "provider-actions-readback"
+                if responses_path is None
+                else "provider-actions-readback-fixture"
+            ),
+            "transport": "live" if responses_path is None else "fixture",
+            "phase": phase,
+            "rollbackProfile": rollback_profile,
+            "releaseId": None,
+            "enumerationReleaseSealSha256": release["sealSha256"],
+            "verifiedAt": plan["at"],
+            "verifiedActionPairs": len(pairs),
+            "safeBaselineResponses": len(safe_paths),
+            "concurrency": concurrency,
+            "requestTimeoutSeconds": request_timeout,
+            "unrelatedPages": verify_unrelated_pages(plan, responses),
+            "observations": observations,
+            "controlPinSha256": control_pin_sha256,
+        }
+        evidence["evidenceSha256"] = hashlib.sha256(
+            canonical_json(evidence)
+        ).hexdigest()
+        write_evidence(output, evidence)
+        return
+
     def verify_pair(pair: tuple[str, int]) -> tuple[list[dict[str, object]], str | None]:
         region, provider = pair
         pair = (region, provider)
@@ -648,19 +762,7 @@ def verify(
         if any(urlsplit(path).path not in known_paths for path in paths):
             raise RolloutError("switch case references an unverified action")
         switch_names.append(case["name"])
-    pages = []
-    for page in plan.get("unrelatedPages", []):
-        if not isinstance(page, dict) or not isinstance(page.get("url"), str) or not isinstance(page.get("sha256"), str):
-            raise RolloutError("unrelated Pages check is invalid")
-        url = page["url"]
-        parsed = urlsplit(url)
-        if parsed.scheme != "https" or parsed.netloc != "getseasons.app" or parsed.query or parsed.fragment or parsed.path.startswith("/provider-actions"):
-            raise RolloutError("unrelated Pages URL is outside the canonical site")
-        status, _, body = responses.get(url)
-        digest = hashlib.sha256(body).hexdigest()
-        if status != 200 or digest != page["sha256"]:
-            raise RolloutError("unrelated Pages response changed")
-        pages.append({"url": url, "status": status, "sha256": digest})
+    pages = verify_unrelated_pages(plan, responses)
     evidence: dict[str, object] = {
         "schemaVersion": 1,
         "kind": (
