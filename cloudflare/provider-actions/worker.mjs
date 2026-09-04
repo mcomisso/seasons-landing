@@ -90,7 +90,9 @@ function hasSafeOriginResponse(response) {
 
 function publicResponse(response) {
   const headers = new Headers(response.headers);
-  headers.set("Cache-Control", "no-store");
+  for (const [name, value] of Object.entries(SAFE_HEADERS)) {
+    headers.set(name, value);
+  }
   headers.delete("Set-Cookie");
   return new Response(response.body, {
     status: response.status,

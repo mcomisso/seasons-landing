@@ -243,6 +243,34 @@ test("removes origin cookies while preserving verified response bytes", async ()
   );
 });
 
+test("replaces permissive origin security headers with the public safe policy", async () => {
+  const response = await worker.fetch(
+    new Request("https://getseasons.app/provider-actions/cancel/8/GB/"),
+    ENV,
+    {
+      fetch: async () =>
+        new Response("safe body", {
+          status: 200,
+          headers: {
+            ...ORIGIN_HEADERS,
+            "Content-Security-Policy": "default-src *; frame-ancestors *",
+            "Referrer-Policy": "unsafe-url",
+            "X-Content-Type-Options": "off",
+            "X-Frame-Options": "ALLOWALL",
+          },
+        }),
+    }
+  );
+
+  assert.equal(
+    response.headers.get("content-security-policy"),
+    "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  );
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
+});
+
 test("Cloudflare configs capture only the Provider Actions route family", async () => {
   for (const [name, expectedMode] of [
     ["wrangler.toml", "proxy"],
