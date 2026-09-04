@@ -4,8 +4,10 @@ import importlib.util
 import json
 import subprocess
 import sys
+import threading
 import unittest
 import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -188,6 +190,44 @@ def minimal_readback_case(temporary: Path):
 
 
 class ProviderActionsRolloutTests(unittest.TestCase):
+    def test_live_response_sends_stable_operational_identity(self):
+        received = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                received["user-agent"] = self.headers.get("User-Agent")
+                received["accept"] = self.headers.get("Accept")
+                self.send_response(200)
+                self.send_header("X-Test-Response", "preserved")
+                self.end_headers()
+                self.wfile.write(b"readback body")
+
+            def log_message(self, format, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            result = ROLLOUT.live_response(
+                f"http://127.0.0.1:{server.server_port}/readback", 2.0
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+        self.assertEqual(
+            received,
+            {
+                "user-agent": "Seasons-Provider-Actions-Readback/1",
+                "accept": "text/html,application/xml",
+            },
+        )
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["headers"]["X-Test-Response"], "preserved")
+        self.assertEqual(base64.b64decode(result["bodyBase64"]), b"readback body")
+
     def test_post_deploy_worker_must_be_proxy_mode(self):
         sources = [
             {"name": "account", "type": "cloudflare-account"},

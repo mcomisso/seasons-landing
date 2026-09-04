@@ -1105,7 +1105,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def live_response(url: str, timeout: float) -> dict[str, object]:
     opener = urllib.request.build_opener(NoRedirect)
-    request = urllib.request.Request(url, headers={"Accept": "text/html,application/xml"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "text/html,application/xml",
+            "User-Agent": "Seasons-Provider-Actions-Readback/1",
+        },
+    )
     try:
         response = opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as error:
