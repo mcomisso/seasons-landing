@@ -30,6 +30,9 @@ PUBLIC_FILES = (
     "header.png",
     "horizontal.png",
     "index.html",
+    "landing.css",
+    "landing-scene.js",
+    "landing.js",
     "phone.png",
     "privacy.html",
     "raffleimage.jpg",
@@ -38,6 +41,10 @@ PUBLIC_FILES = (
     "seasonslogo.png",
     "sitemap.xml",
     "terms.html",
+    "three.LICENSE.txt",
+    "three.core.js",
+    "three.module.js",
+    "trending-shows.json",
 )
 PUBLIC_DIRECTORIES = (
     ".well-known",

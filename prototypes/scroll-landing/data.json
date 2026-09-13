@@ -1,0 +1,132 @@
+{
+  "updatedAt": "2026-09-13T10:51:00.015618+00:00",
+  "generatedAt": "2026-09-13T10:46:54.714232Z",
+  "staleAt": "2026-09-13T11:46:54.714232Z",
+  "sourceUrl": "https://seasons-backend.fly.dev/v2/onboarding/catalog/browse?mediaType=tv&category=trendingThisWeek&region=GB&language=en-GB&page=1",
+  "region": "GB",
+  "attribution": {
+    "source": "tmdb",
+    "displayName": "TMDB",
+    "notice": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
+    "sourceUrl": "https://www.themoviedb.org/"
+  },
+  "providerSource": "Pinned TMDB artwork; representative services, not a popularity ranking",
+  "shows": [
+    {
+      "id": 95350,
+      "title": "Lanterns",
+      "poster": "https://image.tmdb.org/t/p/w342/gpC7h43xPMEV3goYMQShfJbTtLq.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/6gqezQJ2mkm4jreWwLyOZy2Vf6i.jpg",
+      "rank": 1
+    },
+    {
+      "id": 125988,
+      "title": "Silo",
+      "poster": "https://image.tmdb.org/t/p/w342/gMYZZvnkVNTqSVnVCphWbPXwWwb.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/uTWhbLc7Bj4qNSdW3ZvZKL8cOHv.jpg",
+      "rank": 2
+    },
+    {
+      "id": 108978,
+      "title": "Reacher",
+      "poster": "https://image.tmdb.org/t/p/w342/f1VCQIG2iCyOookdgOzwtUpwWC0.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/pF0qkRsrHkdYadPWY9AMeFZfcwk.jpg",
+      "rank": 3
+    },
+    {
+      "id": 236235,
+      "title": "The Gentlemen",
+      "poster": "https://image.tmdb.org/t/p/w342/tw3tzfXaSpmUZIB8ZNqNEGzMBCy.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/yG1wltFmkX5c5ocACKfpX0tp3SY.jpg",
+      "rank": 4
+    },
+    {
+      "id": 37854,
+      "title": "One Piece",
+      "poster": "https://image.tmdb.org/t/p/w342/dB4EDhre2dsC2kxYDavyKWqLQwi.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/2rmK7mnchw9Xr3XdiTFSxTTLXqv.jpg",
+      "rank": 5
+    },
+    {
+      "id": 30984,
+      "title": "Bleach",
+      "poster": "https://image.tmdb.org/t/p/w342/2EewmxXe72ogD0EaWM8gqa0ccIw.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/o0NsbcIvsllg6CJX0FBFY8wWbsn.jpg",
+      "rank": 6
+    },
+    {
+      "id": 113962,
+      "title": "Lioness",
+      "poster": "https://image.tmdb.org/t/p/w342/rzpHPSEgPTpRs8EHbygwsOw7jC0.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/4NBYDOnEjAzyuP7CMkD5s7fs44K.jpg",
+      "rank": 7
+    },
+    {
+      "id": 196322,
+      "title": "Dark Matter",
+      "poster": "https://image.tmdb.org/t/p/w342/2DPmTlv8F0V1TQBPmlsGOVOhtWk.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/572uSrnXM5uPVYMVqsxfNA41cT8.jpg",
+      "rank": 8
+    },
+    {
+      "id": 258230,
+      "title": "Last Seen",
+      "poster": "https://image.tmdb.org/t/p/w342/vozJZjHv0Yyv4PjoOxF5tVMUGFI.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/kgaQnDdDaPqvGN7i8LLz1aWJdjP.jpg",
+      "rank": 9
+    },
+    {
+      "id": 300507,
+      "title": "Crew Girl",
+      "poster": "https://image.tmdb.org/t/p/w342/jkPZW1iHNvlI6077NxSxwITa1tj.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/lmtTtOjsIBxwKD7LsAD5eeyhq1g.jpg",
+      "rank": 10
+    },
+    {
+      "id": 299952,
+      "title": "The Early Spring",
+      "poster": "https://image.tmdb.org/t/p/w342/lGFngmJWMO4HTPcI0sUGKBAFqMe.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/oUFUvEMCBP80e4eYsfVfxC8n7ih.jpg",
+      "rank": 11
+    },
+    {
+      "id": 97546,
+      "title": "Ted Lasso",
+      "poster": "https://image.tmdb.org/t/p/w342/uRHsiw1wLxPHFXkkv4Ix1s0O6f4.jpg",
+      "backdrop": "https://image.tmdb.org/t/p/w780/nE94ejEbzNCU48bW1oju0dqBONz.jpg",
+      "rank": 12
+    }
+  ],
+  "providers": [
+    {
+      "id": 8,
+      "name": "Netflix",
+      "logo": "https://image.tmdb.org/t/p/w185/pbpMk2JmcoNnQwx5JGpXngfoWtp.jpg"
+    },
+    {
+      "id": 119,
+      "name": "Prime Video",
+      "logo": "https://image.tmdb.org/t/p/w185/dQeAar5H991VYporEjUspolDarG.jpg"
+    },
+    {
+      "id": 350,
+      "name": "Apple TV+",
+      "logo": "https://image.tmdb.org/t/p/w185/6uhKBfmtzFqOcLousHwZuzcrScK.jpg"
+    },
+    {
+      "id": 337,
+      "name": "Disney+",
+      "logo": "https://image.tmdb.org/t/p/w185/97yvRBw1GzX7fXprcF80er19ot.jpg"
+    },
+    {
+      "id": 531,
+      "name": "Paramount+",
+      "logo": "https://image.tmdb.org/t/p/w185/xbhHHa1YgtpwhC8lb1NQ3ACVcLd.jpg"
+    },
+    {
+      "id": 29,
+      "name": "Sky Go",
+      "logo": "https://image.tmdb.org/t/p/w185/1UrT2H9x6DuQ9ytNhsSCUFtTUwS.jpg"
+    }
+  ]
+}
